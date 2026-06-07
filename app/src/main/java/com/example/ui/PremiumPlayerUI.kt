@@ -63,6 +63,10 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.Path
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.platform.LocalConfiguration
+import android.content.res.Configuration
 
 // High-end glassmorphic UI color definitions
 val MidnightSpaceBg = Color(0xFF040610)
@@ -279,6 +283,17 @@ fun PremiumPlayerUI(
         clientState?.status == "PLAYING"
     }
 
+    val systemSongs = hostNotificationSongs
+    val displaySongs = if (isHostMode) {
+        if (hostUseNotificationHook) {
+            systemSongs
+        } else {
+            localSongs
+        }
+    } else {
+        clientSongs
+    }
+
     // Permission launcher for Bluetooth discovery and connect
     var bluetoothPermissionGranted by remember { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -315,12 +330,40 @@ fun PremiumPlayerUI(
                 )
             )
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .statusBarsPadding()
-                .navigationBarsPadding()
-        ) {
+        val configuration = LocalConfiguration.current
+        val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val auth = checkNotificationFilterAuth(context)
+
+        if (isLandscape) {
+            LandscapePlayerLayout(
+                viewModel = viewModel,
+                isHostMode = isHostMode,
+                hostUseNotificationHook = hostUseNotificationHook,
+                bluetoothState = bluetoothState,
+                connectedDevice = connectedDevice,
+                currentTrackTitle = currentTrackTitle,
+                currentTrackArtist = currentTrackArtist,
+                currentTrackArtUri = currentTrackArtUri,
+                totalDuration = totalDuration,
+                currentPosition = currentPosition,
+                isPlaying = isPlaying,
+                isShuffleActive = isShuffleActive,
+                repeatStateString = repeatStateString,
+                currentVolumeVal = currentVolumeVal,
+                maxVolume = maxVolume,
+                displaySongs = displaySongs,
+                auth = auth,
+                showScanSheet = showScanSheet,
+                onShowScanSheet = { showScanSheet = it },
+                onSetLocalVolume = { localVolume = it }
+            )
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+            ) {
             // Master Header Bar
             Row(
                 modifier = Modifier
@@ -860,19 +903,6 @@ fun PremiumPlayerUI(
                 modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp)
             )
 
-            val systemSongs = hostNotificationSongs
-
-            // Dynamic Song sequence drawer column list
-            val displaySongs = if (isHostMode) {
-                if (hostUseNotificationHook) {
-                    systemSongs
-                } else {
-                    localSongs
-                }
-            } else {
-                clientSongs
-            }
-
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1065,6 +1095,7 @@ fun PremiumPlayerUI(
                 }
             }
         }
+        } // Close else branch of isLandscape!
 
         // Bluetooth Active Remote Device Scanning Dialog Sheet Overlay
         if (showScanSheet) {
@@ -1508,6 +1539,574 @@ fun MaterialWaveSeekBar(
                 radius = 6.dp.toPx(),
                 center = Offset(activeWidth, centerY)
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun LandscapePlayerLayout(
+    viewModel: MainViewModel,
+    isHostMode: Boolean,
+    hostUseNotificationHook: Boolean,
+    bluetoothState: BluetoothConnectionState,
+    connectedDevice: String?,
+    currentTrackTitle: String,
+    currentTrackArtist: String,
+    currentTrackArtUri: Any?,
+    totalDuration: Long,
+    currentPosition: Long,
+    isPlaying: Boolean,
+    isShuffleActive: Boolean,
+    repeatStateString: String,
+    currentVolumeVal: Int,
+    maxVolume: Int,
+    displaySongs: List<Song>,
+    auth: Boolean,
+    showScanSheet: Boolean,
+    onShowScanSheet: (Boolean) -> Unit,
+    onSetLocalVolume: (Int) -> Unit
+) {
+    val context = LocalContext.current
+    val hapticDriver = remember { PremiumHapticDriver(context) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // Left Column: Central Media Player Card
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+        ) {
+            Card(
+                modifier = Modifier.fillMaxSize(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = GlassSurface),
+                border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Album art cover slot
+                    Box(
+                        modifier = Modifier
+                            .size(90.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(Color.White.copy(alpha = 0.05f))
+                            .border(1.dp, GlassBorder, RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (currentTrackArtUri != null) {
+                            AsyncImage(
+                                model = currentTrackArtUri,
+                                contentDescription = "Intercepted album art",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Icon(
+                                imageVector = if (hostUseNotificationHook) Icons.Rounded.WifiTethering else Icons.Rounded.Headphones,
+                                contentDescription = "Fallback album art icon",
+                                tint = if (isHostMode) CyanGlow else RosePulse,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                    }
+
+                    // Metadata Text Grouping (Title & Artist)
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            text = currentTrackTitle,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = PureWhite,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .basicMarquee()
+                                .padding(horizontal = 8.dp)
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = currentTrackArtist,
+                            fontSize = 12.sp,
+                            color = Color.LightGray.copy(alpha = 0.7f),
+                            maxLines = 1
+                        )
+                    }
+
+                    // Playhead Wave SeekBar
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        val totalDurationSec = totalDuration / 1000f
+                        val currentPositionSec = currentPosition / 1000f
+                        val rawSliderVal = if (totalDurationSec > 0f) currentPositionSec / totalDurationSec else 0f
+                        var localDragFraction by remember { mutableStateOf<Float?>(null) }
+                        val activeSliderValue = localDragFraction ?: rawSliderVal
+
+                        MaterialWaveSeekBar(
+                            value = activeSliderValue.coerceIn(0f, 1f),
+                            onValueChange = { fraction ->
+                                localDragFraction = fraction
+                                hapticDriver.triggerTick()
+                            },
+                            onValueChangeFinished = {
+                                localDragFraction?.let { fraction ->
+                                    val newPos = (fraction * totalDuration).roundToLong()
+                                    viewModel.seekToPosition(newPos)
+                                }
+                                localDragFraction = null
+                            },
+                            isPlaying = isPlaying,
+                            activeColor = if (isHostMode) CyanGlow else RosePulse,
+                            inactiveColor = Color.White.copy(alpha = 0.08f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp)
+                        )
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(formatDuration(currentPosition), fontSize = 10.sp, color = Color.LightGray.copy(alpha = 0.6f))
+                            Text(formatDuration(totalDuration), fontSize = 10.sp, color = Color.LightGray.copy(alpha = 0.6f))
+                        }
+                    }
+
+                    // Master Control Row
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        IconButton(onClick = {
+                            hapticDriver.triggerClick()
+                            viewModel.toggleShuffle()
+                        }, modifier = Modifier.size(32.dp)) {
+                            Icon(
+                                Icons.Rounded.Shuffle,
+                                contentDescription = "Shuffle",
+                                tint = if (isShuffleActive) (if (isHostMode) CyanGlow else RosePulse) else Color.Gray,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        IconButton(onClick = {
+                            hapticDriver.triggerSkipPulse()
+                            viewModel.playPrevious()
+                        }, modifier = Modifier.size(36.dp)) {
+                            Icon(
+                                Icons.Rounded.SkipPrevious,
+                                contentDescription = "Prev",
+                                tint = PureWhite,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                        FloatingActionButton(
+                            onClick = {
+                                hapticDriver.triggerClick()
+                                viewModel.togglePlayPause()
+                            },
+                            containerColor = if (isHostMode) CyanGlow else RosePulse,
+                            shape = CircleShape,
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Icon(
+                                if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                                contentDescription = "Play/Pause",
+                                tint = if (isHostMode) Color.Black else PureWhite,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        IconButton(onClick = {
+                            hapticDriver.triggerSkipPulse()
+                            viewModel.playNext()
+                        }, modifier = Modifier.size(36.dp)) {
+                            Icon(
+                                Icons.Rounded.SkipNext,
+                                contentDescription = "Next",
+                                tint = PureWhite,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                        IconButton(onClick = {
+                            hapticDriver.triggerClick()
+                            viewModel.toggleRepeat()
+                        }, modifier = Modifier.size(32.dp)) {
+                            Icon(
+                                if (repeatStateString == "ONE") Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
+                                contentDescription = "Repeat",
+                                tint = if (repeatStateString != "OFF") (if (isHostMode) CyanGlow else RosePulse) else Color.Gray,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
+
+                    // Volume Control Slider Row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            if (currentVolumeVal == 0) Icons.Rounded.VolumeMute else Icons.Rounded.VolumeUp,
+                            contentDescription = "Volume Icon",
+                            tint = if (isHostMode) CyanGlow else RosePulse,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Slider(
+                            value = currentVolumeVal.toFloat(),
+                            valueRange = 0f..maxVolume.toFloat(),
+                            onValueChange = { newValue ->
+                                val targetVol = newValue.toInt()
+                                if (isHostMode) {
+                                    onSetLocalVolume(targetVol)
+                                }
+                                viewModel.setVolume(targetVol)
+                                hapticDriver.triggerTick()
+                            },
+                            colors = SliderDefaults.colors(
+                                thumbColor = if (isHostMode) CyanGlow else RosePulse,
+                                activeTrackColor = if (isHostMode) CyanGlow else RosePulse,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.1f)
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 8.dp)
+                        )
+                    }
+                }
+            }
+        }
+
+        // Right Column: Master Header, Status card, and Queue list
+        Column(
+            modifier = Modifier
+                .weight(1.2f)
+                .fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Mini Header
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("BLUESYNC BRIDGE", fontSize = 14.sp, fontWeight = FontWeight.Black, color = PureWhite)
+                    Text(
+                        if (isHostMode) "Primary Broadcast Terminal" else "Client Remote Interception Hub",
+                        fontSize = 9.sp,
+                        color = Color.LightGray.copy(alpha = 0.6f)
+                    )
+                }
+
+                // Mode switch
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(GlassSurface)
+                        .padding(2.dp)
+                ) {
+                    Text(
+                        text = "HOST",
+                        color = if (isHostMode) CyanGlow else Color.Gray,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 9.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (isHostMode) GlassSurface else Color.Transparent)
+                            .clickable {
+                                hapticDriver.triggerClick()
+                                viewModel.toggleAppMode(true)
+                            }
+                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                    )
+                    Text(
+                        text = "CLIENT",
+                        color = if (!isHostMode) RosePulse else Color.Gray,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 9.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(if (!isHostMode) GlassSurface else Color.Transparent)
+                            .clickable {
+                                hapticDriver.triggerClick()
+                                viewModel.toggleAppMode(false)
+                            }
+                            .padding(horizontal = 6.dp, vertical = 4.dp)
+                    )
+                }
+            }
+
+            // Status card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = GlassSurface),
+                shape = RoundedCornerShape(12.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                        val connectionIcon = when (bluetoothState) {
+                            BluetoothConnectionState.DISCONNECTED -> Icons.Rounded.BluetoothDisabled
+                            BluetoothConnectionState.CONNECTING -> Icons.Rounded.BluetoothSearching
+                            BluetoothConnectionState.CONNECTED -> Icons.Rounded.BluetoothConnected
+                            BluetoothConnectionState.LISTENING -> Icons.Rounded.CellTower
+                        }
+                        val connectionColor = when (bluetoothState) {
+                            BluetoothConnectionState.DISCONNECTED -> Color.Gray
+                            BluetoothConnectionState.CONNECTING -> CyanGlow
+                            BluetoothConnectionState.CONNECTED -> RosePulse
+                            BluetoothConnectionState.LISTENING -> CyanGlow
+                        }
+                        val connectionMsg = when (bluetoothState) {
+                            BluetoothConnectionState.DISCONNECTED -> "Offline"
+                            BluetoothConnectionState.CONNECTING -> "Connecting..."
+                            BluetoothConnectionState.CONNECTED -> "Bridge Active"
+                            BluetoothConnectionState.LISTENING -> "Broadcasting"
+                        }
+                        Icon(connectionIcon, contentDescription = null, tint = connectionColor, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Column {
+                            Text(connectionMsg, color = PureWhite, fontWeight = FontWeight.SemiBold, fontSize = 11.sp)
+                            if (bluetoothState == BluetoothConnectionState.CONNECTED && connectedDevice != null) {
+                                Text(
+                                    "Device: $connectedDevice",
+                                    color = Color.LightGray.copy(alpha = 0.5f),
+                                    fontSize = 9.sp
+                                )
+                            }
+                        }
+                    }
+
+                    if (isHostMode) {
+                        if (bluetoothState == BluetoothConnectionState.DISCONNECTED) {
+                            Button(
+                                onClick = {
+                                    hapticDriver.triggerClick()
+                                    viewModel.startBluetoothHostServer()
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = CyanGlow),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier
+                                    .height(28.dp)
+                                    .testTag("open_host_button_landscape")
+                            ) {
+                                Text("Host", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = {
+                                    hapticDriver.triggerClick()
+                                    viewModel.disconnectBluetooth()
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier
+                                    .height(28.dp)
+                                    .testTag("disconnect_host_button_landscape")
+                            ) {
+                                Text("Close", color = PureWhite, fontSize = 10.sp)
+                            }
+                        }
+                    } else {
+                        if (bluetoothState == BluetoothConnectionState.DISCONNECTED) {
+                            Button(
+                                onClick = {
+                                    hapticDriver.triggerClick()
+                                    onShowScanSheet(true)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = RosePulse),
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier.height(28.dp)
+                            ) {
+                                Text("Find", color = PureWhite, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = {
+                                    hapticDriver.triggerClick()
+                                    viewModel.disconnectBluetooth()
+                                },
+                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                modifier = Modifier
+                                    .height(28.dp)
+                                    .testTag("disconnect_client_button_landscape")
+                            ) {
+                                Text("Disconnect", color = PureWhite, fontSize = 10.sp)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If host mode, show Notification Listener toggle selection
+            if (isHostMode) {
+                HostControlsSelectionCard(
+                    useNotificationHook = hostUseNotificationHook,
+                    onToggle = { hook ->
+                        hapticDriver.triggerClick()
+                        viewModel.toggleHostSource(hook)
+                    }
+                )
+            }
+
+            // Queue box with sequence list
+            Text(
+                text = if (isHostMode) {
+                    if (hostUseNotificationHook) "Intercepted Sync Sequence" else "Native Host Library"
+                } else {
+                    "Synchronized Upcoming Queue"
+                },
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (isHostMode) CyanGlow else RosePulse,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+            )
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.White.copy(alpha = 0.03f))
+                    .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
+            ) {
+                if (isHostMode && hostUseNotificationHook && (!auth || displaySongs.isEmpty())) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            "HOOK ACCESS REQUIRED / EMPTY",
+                            color = PureWhite,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                } else if (displaySongs.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text("Waiting for pack...", color = Color.Gray, fontSize = 10.sp)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        itemsIndexed(displaySongs) { idx, song ->
+                            val activeMatch = if (isHostMode) {
+                                val currentIdx = (viewModel.service.value)?.exoPlayer?.currentMediaItemIndex ?: -1
+                                currentIdx == idx
+                            } else {
+                                viewModel.service.value?.clientPlaybackState?.value?.currentIndex == idx
+                            }
+
+                            val itemArtModel: Any? = remember(song.albumArtUri) {
+                                val artUri = song.albumArtUri
+                                if (artUri != null && artUri.startsWith("data:image")) {
+                                    try {
+                                        val clean = artUri.substringAfter("base64,")
+                                        val bytes = android.util.Base64.decode(clean, android.util.Base64.DEFAULT)
+                                        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                    } catch (e: Exception) {
+                                        null
+                                    }
+                                } else {
+                                    artUri
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (activeMatch) Color.White.copy(alpha = 0.08f) else Color.Transparent)
+                                    .clickable {
+                                        hapticDriver.triggerClick()
+                                        viewModel.playSongWithId(song.id, idx)
+                                    }
+                                    .padding(6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        String.format("%02d", idx + 1),
+                                        color = if (activeMatch) (if (isHostMode) CyanGlow else RosePulse) else Color.Gray,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 10.sp,
+                                        modifier = Modifier.width(20.dp)
+                                    )
+
+                                    Box(
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(Color.White.copy(alpha = 0.05f))
+                                    ) {
+                                        if (itemArtModel != null) {
+                                            AsyncImage(
+                                                model = itemArtModel,
+                                                contentDescription = "Track cover thumbnail",
+                                                contentScale = ContentScale.Crop,
+                                                modifier = Modifier.fillMaxSize()
+                                            )
+                                        } else {
+                                            Icon(
+                                                imageVector = Icons.Rounded.MusicNote,
+                                                contentDescription = "Default cover thumbnail",
+                                                tint = Color.Gray.copy(alpha = 0.6f),
+                                                modifier = Modifier.size(12.dp).align(Alignment.Center)
+                                            )
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    Column {
+                                        Text(
+                                            song.title,
+                                            color = if (activeMatch) PureWhite else Color.LightGray,
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 11.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            song.artist,
+                                            color = Color.Gray,
+                                            fontSize = 9.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                                Text(formatDuration(song.duration), color = Color.Gray, fontSize = 9.sp)
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

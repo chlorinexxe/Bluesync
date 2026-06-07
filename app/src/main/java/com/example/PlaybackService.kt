@@ -856,42 +856,35 @@ class PlaybackService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(openAppPending)
 
-        if (isHostMode.value) {
-            val detail = if (hostUseNotificationHook.value) "Broadcasting local active controllers" else "Broadcasting native Media3 player"
-            builder.setContentTitle("BlueSync Host Bridge Active")
-                .setContentText(detail)
-                .setSubText("Host Terminal")
-        } else {
-            val prevIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_PREV }
-            val prevPending = android.app.PendingIntent.getService(this, 1, prevIntent, flag)
+        val prevIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_PREV }
+        val prevPending = android.app.PendingIntent.getService(this, 1, prevIntent, flag)
 
-            val playIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_PLAY_PAUSE }
-            val playPending = android.app.PendingIntent.getService(this, 2, playIntent, flag)
+        val playIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_PLAY_PAUSE }
+        val playPending = android.app.PendingIntent.getService(this, 2, playIntent, flag)
 
-            val nextIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_NEXT }
-            val nextPending = android.app.PendingIntent.getService(this, 3, nextIntent, flag)
+        val nextIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_NEXT }
+        val nextPending = android.app.PendingIntent.getService(this, 3, nextIntent, flag)
 
-            builder.setContentTitle(trackInfo.title)
-                .setContentText(trackInfo.artist)
-                .setSubText("Client Remote")
-                .addAction(android.R.drawable.ic_media_previous, "Previous", prevPending)
-                .addAction(
-                    if (trackInfo.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
-                    if (trackInfo.isPlaying) "Pause" else "Play",
-                    playPending
-                )
-                .addAction(android.R.drawable.ic_media_next, "Next", nextPending)
+        builder.setContentTitle(trackInfo.title)
+            .setContentText(trackInfo.artist)
+            .setSubText(modeText)
+            .addAction(android.R.drawable.ic_media_previous, "Previous", prevPending)
+            .addAction(
+                if (trackInfo.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                if (trackInfo.isPlaying) "Pause" else "Play",
+                playPending
+            )
+            .addAction(android.R.drawable.ic_media_next, "Next", nextPending)
 
-            if (trackInfo.albumArt != null) {
-                builder.setLargeIcon(trackInfo.albumArt)
-            }
+        if (trackInfo.albumArt != null) {
+            builder.setLargeIcon(trackInfo.albumArt)
+        }
 
-            val session = mediaSession
-            if (session != null) {
-                val mediaStyle = androidx.media3.session.MediaStyleNotificationHelper.MediaStyle(session)
-                    .setShowActionsInCompactView(0, 1, 2)
-                builder.setStyle(mediaStyle)
-            }
+        val session = mediaSession
+        if (session != null) {
+            val mediaStyle = androidx.media3.session.MediaStyleNotificationHelper.MediaStyle(session)
+                .setShowActionsInCompactView(0, 1, 2)
+            builder.setStyle(mediaStyle)
         }
 
         val notification = builder.build()
