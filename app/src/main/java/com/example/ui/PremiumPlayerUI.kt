@@ -96,6 +96,7 @@ fun PremiumPlayerUI(
 
     // Playback info
     val localSongs by (service?.hostSongs ?: MutableStateFlow(emptyList())).collectAsState()
+    val hostNotificationSongs by (service?.hostNotificationSongs ?: MutableStateFlow(emptyList())).collectAsState()
     val clientSongs by (service?.clientSongs ?: MutableStateFlow(emptyList())).collectAsState()
     val clientState by (service?.clientPlaybackState ?: MutableStateFlow(null)).collectAsState()
 
@@ -859,28 +860,7 @@ fun PremiumPlayerUI(
                 modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp)
             )
 
-            val systemSongs = remember(currentTrackTitle) {
-                val controller = MyNotificationListener.getActiveController()
-                val queueItems = controller?.queue
-                val list = mutableListOf<Song>()
-                queueItems?.forEach { qItem ->
-                    val itemTitle = qItem.description.title?.toString() ?: "Queue Track"
-                    val itemArtist = qItem.description.subtitle?.toString() ?: "Unknown Artist"
-                    val itemIdStr = qItem.queueId.toString()
-                    list.add(
-                        Song(
-                            id = itemIdStr,
-                            title = itemTitle,
-                            artist = itemArtist,
-                            album = "",
-                            genre = "Streamed",
-                            duration = 0L,
-                            uriString = ""
-                        )
-                    )
-                }
-                list
-            }
+            val systemSongs = hostNotificationSongs
 
             // Dynamic Song sequence drawer column list
             val displaySongs = if (isHostMode) {

@@ -53,6 +53,11 @@ class BluetoothConnectionEngine(private val context: Context) {
     private val _connectedDeviceName = MutableStateFlow<String?>(null)
     val connectedDeviceName: StateFlow<String?> = _connectedDeviceName.asStateFlow()
 
+    var userIntentDisconnected = true
+        private set
+
+    private var autoReconnectJob: Job? = null
+
     // Scanning State
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
@@ -187,7 +192,9 @@ class BluetoothConnectionEngine(private val context: Context) {
             return
         }
 
-        cleanup()
+        autoReconnectJob?.cancel()
+        userIntentDisconnected = false
+        cleanup(explicit = false)
         _connectionState.value = BluetoothConnectionState.LISTENING
         onConnectionStateChanged?.invoke(BluetoothConnectionState.LISTENING)
         _connectedDeviceName.value = null
@@ -235,7 +242,9 @@ class BluetoothConnectionEngine(private val context: Context) {
             return
         }
 
-        cleanup()
+        autoReconnectJob?.cancel()
+        userIntentDisconnected = false
+        cleanup(explicit = false)
         _connectionState.value = BluetoothConnectionState.CONNECTING
         onConnectionStateChanged?.invoke(BluetoothConnectionState.CONNECTING)
         _connectedDeviceName.value = device.name ?: "Unknown Device"
@@ -269,7 +278,13 @@ class BluetoothConnectionEngine(private val context: Context) {
         onConnectionStateChanged?.invoke(BluetoothConnectionState.CONNECTED)
         
         try {
-            _connectedDeviceName.value = socket.remoteDevice?.name ?: "Remote Controller"
+            val device = socket.remoteDevice
+            _connectedDeviceName.value = device?.name ?: "Remote Controller"
+            if (!isHost && device != null) {
+                val sharedPrefs = context.getSharedPreferences("BlueSyncPrefs", Context.MODE_PRIVATE)
+                sharedPrefs.edit().putString("last_connected_mac", device.address).apply()
+                Log.d(TAG, "Saved successful host device MAC: ${device.address}")
+            }
         } catch (e: SecurityException) {
             _connectedDeviceName.value = "Remote Device"
         }
@@ -316,11 +331,50 @@ class BluetoothConnectionEngine(private val context: Context) {
                 Log.e(TAG, "Socket read/write thread error/interrupted", e)
             } finally {
                 Log.d(TAG, "Cleaning up sockets...")
+                val wasConnected = _connectionState.value == BluetoothConnectionState.CONNECTED
                 _connectionState.value = BluetoothConnectionState.DISCONNECTED
                 onConnectionStateChanged?.invoke(BluetoothConnectionState.DISCONNECTED)
                 _connectedDeviceName.value = null
-                cleanup()
+                cleanup(explicit = false)
+
+                if (wasConnected && !userIntentDisconnected) {
+                    triggerAutoReconnectWithDelay()
+                }
             }
+        }
+    }
+
+    private fun triggerAutoReconnectWithDelay() {
+        autoReconnectJob?.cancel()
+        autoReconnectJob = scope.launch {
+            kotlinx.coroutines.delay(4000)
+            if (_connectionState.value == BluetoothConnectionState.DISCONNECTED && !userIntentDisconnected) {
+                val sharedPrefs = context.getSharedPreferences("BlueSyncPrefs", Context.MODE_PRIVATE)
+                val lastMac = sharedPrefs.getString("last_connected_mac", null)
+                if (lastMac != null) {
+                    Log.d(TAG, "Auto-reconnect triggered in background for MAC: $lastMac")
+                    val paired = getPairedDevices()
+                    val match = paired.find { it.address == lastMac }
+                    if (match != null) {
+                        connectToDevice(match)
+                    }
+                }
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun tryAutoConnect() {
+        if (_connectionState.value != BluetoothConnectionState.DISCONNECTED) return
+        val sharedPrefs = context.getSharedPreferences("BlueSyncPrefs", Context.MODE_PRIVATE)
+        val lastMac = sharedPrefs.getString("last_connected_mac", null) ?: return
+        
+        val paired = getPairedDevices()
+        val match = paired.find { it.address == lastMac }
+        if (match != null) {
+            Log.d(TAG, "Initiating silent background auto-connection to host: ${match.address}")
+            userIntentDisconnected = false
+            connectToDevice(match)
         }
     }
 
@@ -359,7 +413,16 @@ class BluetoothConnectionEngine(private val context: Context) {
         serverSocket = null
     }
 
-    fun cleanup() {
+    fun setUserDisconnected() {
+        userIntentDisconnected = true
+        autoReconnectJob?.cancel()
+    }
+
+    fun cleanup(explicit: Boolean = false) {
+        if (explicit) {
+            userIntentDisconnected = true
+            autoReconnectJob?.cancel()
+        }
         stopDeviceDiscovery()
         listeningJob?.cancel()
         listeningJob = null

@@ -66,6 +66,9 @@ class PlaybackService : Service() {
     private val _clientSongs = MutableStateFlow<List<Song>>(emptyList())
     val clientSongs = _clientSongs.asStateFlow()
 
+    private val _hostNotificationSongs = MutableStateFlow<List<Song>>(emptyList())
+    val hostNotificationSongs = _hostNotificationSongs.asStateFlow()
+
     private val _clientPlaybackState = MutableStateFlow<BluetoothStateUpdate?>(null)
     val clientPlaybackState = _clientPlaybackState.asStateFlow()
 
@@ -465,7 +468,49 @@ class PlaybackService : Service() {
                                 )
                             )
                         }
+                    } else {
+                        // Fallback: Match current intercepted title to local scanned host library
+                        val nativeSongs = _hostSongs.value
+                        if (nativeSongs.isNotEmpty()) {
+                            var matchedNativeIdx = nativeSongs.indexOfFirst {
+                                it.title.equals(title, ignoreCase = true) || title.contains(it.title, ignoreCase = true) || it.title.contains(title, ignoreCase = true)
+                            }
+                            if (matchedNativeIdx == -1) matchedNativeIdx = 0
+
+                            val startIndex = (matchedNativeIdx + 1) % nativeSongs.size
+                            for (i in 0 until 5) {
+                                val nIdx = (startIndex + i) % nativeSongs.size
+                                val songItem = nativeSongs[nIdx]
+
+                                var smallArtBase64: String? = null
+                                if (songItem.albumArtUri != null) {
+                                    try {
+                                        val bitmap = getLocalAlbumArtBitmap(applicationContext, songItem.albumArtUri)
+                                        if (bitmap != null) {
+                                            smallArtBase64 = getSmallBase64AlbumArt(bitmap)
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Fail to get fallback native small art", e)
+                                    }
+                                }
+
+                                systemSongs.add(
+                                    Song(
+                                        id = songItem.id,
+                                        title = songItem.title,
+                                        artist = songItem.artist,
+                                        album = songItem.album,
+                                        genre = songItem.genre,
+                                        duration = songItem.duration,
+                                        uriString = "",
+                                        albumArtUri = smallArtBase64
+                                    )
+                                )
+                            }
+                        }
                     }
+
+                    _hostNotificationSongs.value = systemSongs
 
                     val artBase64 = getBase64AlbumArt(controller = controller)
 

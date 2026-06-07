@@ -110,6 +110,9 @@ class MainViewModel : ViewModel() {
         _service.value = playbackService
         if (playbackService != null) {
             refreshPairedDevices()
+            if (!playbackService.isHostMode.value) {
+                playbackService.bluetoothEngine.tryAutoConnect()
+            }
         }
     }
 
@@ -117,6 +120,9 @@ class MainViewModel : ViewModel() {
         val s = _service.value ?: return
         s.toggleAppMode(isHost)
         _currentPlaybackPosition.value = 0L
+        if (!isHost) {
+            s.bluetoothEngine.tryAutoConnect()
+        }
     }
 
     fun toggleHostSource(useNotificationListener: Boolean) {
@@ -152,7 +158,8 @@ class MainViewModel : ViewModel() {
 
     fun disconnectBluetooth() {
         val s = _service.value ?: return
-        s.bluetoothEngine.cleanup()
+        s.bluetoothEngine.setUserDisconnected()
+        s.bluetoothEngine.cleanup(explicit = true)
     }
 
     fun playSongWithId(songId: String, index: Int) {

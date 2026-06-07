@@ -126,6 +126,15 @@ class MyNotificationListener : NotificationListenerService() {
         }
     }
 
+    override fun onNotificationPosted(sbn: android.service.notification.StatusBarNotification?) {
+        super.onNotificationPosted(sbn)
+        val pkg = sbn?.packageName ?: return
+        if (pkg != packageName) {
+            registerSessionManager()
+            triggerUpdate()
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         instance = this
