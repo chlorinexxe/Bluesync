@@ -54,6 +54,15 @@ import com.example.haptic.PremiumHapticDriver
 import com.example.model.Song
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlin.math.roundToLong
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.Path
+import androidx.compose.foundation.Canvas
 
 // High-end glassmorphic UI color definitions
 val MidnightSpaceBg = Color(0xFF040610)
@@ -182,7 +191,18 @@ fun PremiumPlayerUI(
             localSongs.getOrNull(idx)?.albumArtUri
         }
     } else {
-        clientState?.currentAlbumArt
+        val base64 = clientState?.currentAlbumArt
+        if (base64 != null && base64.startsWith("data:image")) {
+            try {
+                val clean = base64.substringAfter("base64,")
+                val bytes = android.util.Base64.decode(clean, android.util.Base64.DEFAULT)
+                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            } catch (e: Exception) {
+                null
+            }
+        } else {
+            null
+        }
     }
 
     val isShuffleActive = if (isHostMode) {
@@ -581,19 +601,44 @@ fun PremiumPlayerUI(
                         }
                     }
 
-                    // Sliding Progressive Media Timers with Micro-haptic updates!
-                    Column(modifier = Modifier.fillMaxWidth()) {
+                    // Sliding Progressive Media Timers with Micro-haptic updates and animated wave!
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.GraphicEq,
+                                contentDescription = "Active Seek Label Icon",
+                                tint = if (isHostMode) CyanGlow else RosePulse,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "LIVE AUDIO PLAYHEAD",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isHostMode) CyanGlow.copy(alpha = 0.8f) else RosePulse.copy(alpha = 0.8f),
+                                letterSpacing = 1.sp
+                            )
+                        }
+
                         val totalDurationSec = totalDuration / 1000f
                         val currentPositionSec = currentPosition / 1000f
                         val rawSliderVal = if (totalDurationSec > 0f) currentPositionSec / totalDurationSec else 0f
                         var localDragFraction by remember { mutableStateOf<Float?>(null) }
                         val activeSliderValue = localDragFraction ?: rawSliderVal
 
-                        Slider(
+                        MaterialWaveSeekBar(
                             value = activeSliderValue.coerceIn(0f, 1f),
                             onValueChange = { fraction ->
                                 localDragFraction = fraction
-                                // Drag actions trigger micro-haptic ticks!
                                 hapticDriver.triggerTick()
                             },
                             onValueChangeFinished = {
@@ -603,11 +648,9 @@ fun PremiumPlayerUI(
                                 }
                                 localDragFraction = null
                             },
-                            colors = SliderDefaults.colors(
-                                thumbColor = if (isHostMode) CyanGlow else RosePulse,
-                                activeTrackColor = if (isHostMode) CyanGlow else RosePulse,
-                                inactiveTrackColor = Color.White.copy(alpha = 0.1f)
-                            ),
+                            isPlaying = isPlaying,
+                            activeColor = if (isHostMode) CyanGlow else RosePulse,
+                            inactiveColor = Color.White.copy(alpha = 0.08f),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 8.dp)
@@ -732,7 +775,31 @@ fun PremiumPlayerUI(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.VolumeUp,
+                            contentDescription = "Active Volume Label Icon",
+                            tint = if (isHostMode) CyanGlow else RosePulse,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "REMOTE AUDIO VOLUME CONTROL",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isHostMode) CyanGlow.copy(alpha = 0.8f) else RosePulse.copy(alpha = 0.8f),
+                            letterSpacing = 1.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
 
                     // Volume Control Slider Row
                     Row(
@@ -742,8 +809,8 @@ fun PremiumPlayerUI(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
-                            imageVector = if (currentVolumeVal == 0) Icons.Rounded.VolumeDown else Icons.Rounded.VolumeDown,
-                            contentDescription = "Volume Down Icon",
+                            imageVector = if (currentVolumeVal == 0) Icons.Rounded.VolumeMute else Icons.Rounded.VolumeUp,
+                            contentDescription = "Volume State Icon",
                             tint = if (isHostMode) CyanGlow else RosePulse,
                             modifier = Modifier.size(20.dp)
                         )
@@ -784,7 +851,7 @@ fun PremiumPlayerUI(
                 text = if (isHostMode) {
                     if (hostUseNotificationHook) "Intercepted Sync Sequence" else "Native Host Library"
                 } else {
-                    "Synchronized Bridge Playlist"
+                    "Synchronized Upcoming Queue (Next 5)"
                 },
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
@@ -910,6 +977,21 @@ fun PremiumPlayerUI(
                                     clientState?.currentIndex == idx
                                 }
 
+                                val itemArtModel: Any? = remember(song.albumArtUri) {
+                                    val artUri = song.albumArtUri
+                                    if (artUri != null && artUri.startsWith("data:image")) {
+                                        try {
+                                            val clean = artUri.substringAfter("base64,")
+                                            val bytes = android.util.Base64.decode(clean, android.util.Base64.DEFAULT)
+                                            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                        } catch (e: Exception) {
+                                            null
+                                        }
+                                    } else {
+                                        artUri
+                                    }
+                                }
+
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
@@ -934,6 +1016,31 @@ fun PremiumPlayerUI(
                                             fontSize = 11.sp,
                                             modifier = Modifier.width(28.dp)
                                         )
+
+                                        Box(
+                                            modifier = Modifier
+                                                .size(40.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(Color.White.copy(alpha = 0.05f))
+                                        ) {
+                                            if (itemArtModel != null) {
+                                                AsyncImage(
+                                                    model = itemArtModel,
+                                                    contentDescription = "Track cover thumbnail",
+                                                    contentScale = ContentScale.Crop,
+                                                    modifier = Modifier.fillMaxSize()
+                                                )
+                                            } else {
+                                                Icon(
+                                                    imageVector = Icons.Rounded.MusicNote,
+                                                    contentDescription = "Default cover thumbnail",
+                                                    tint = Color.Gray.copy(alpha = 0.6f),
+                                                    modifier = Modifier.size(18.dp).align(Alignment.Center)
+                                                )
+                                            }
+                                        }
+
+                                        Spacer(modifier = Modifier.width(12.dp))
 
                                         Column {
                                             Text(
@@ -1308,4 +1415,119 @@ private fun checkRequiredPermissions(context: Context): Boolean {
                 context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
     }
     return true
+}
+
+@Composable
+fun MaterialWaveSeekBar(
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    onValueChangeFinished: () -> Unit,
+    isPlaying: Boolean,
+    activeColor: Color,
+    inactiveColor: Color,
+    modifier: Modifier = Modifier
+) {
+    var isDragging by remember { mutableStateOf(false) }
+    var dragProgress by remember { mutableStateOf(0f) }
+    val displayValue = if (isDragging) dragProgress else value
+
+    val infiniteTransition = rememberInfiniteTransition(label = "wave")
+    val phaseShift by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 2f * Math.PI.toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "phase"
+    )
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(28.dp)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = { offset ->
+                        isDragging = true
+                        val fraction = (offset.x / size.width).coerceIn(0f, 1f)
+                        dragProgress = fraction
+                        onValueChange(fraction)
+                        tryAwaitRelease()
+                        isDragging = false
+                        onValueChangeFinished()
+                    }
+                )
+            }
+            .pointerInput(Unit) {
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        isDragging = true
+                        dragProgress = (offset.x / size.width).coerceIn(0f, 1f)
+                        onValueChange(dragProgress)
+                    },
+                    onDragEnd = {
+                        isDragging = false
+                        onValueChangeFinished()
+                    },
+                    onDragCancel = {
+                        isDragging = false
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        val newProgress = (dragProgress + dragAmount.x / size.width).coerceIn(0f, 1f)
+                        dragProgress = newProgress
+                        onValueChange(newProgress)
+                    }
+                )
+            }
+    ) {
+        val width = constraints.maxWidth.toFloat()
+        val height = constraints.maxHeight.toFloat()
+        val centerY = height / 2f
+        val activeWidth = displayValue * width
+
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            // Draw Inactive Track: Simple clean line
+            drawLine(
+                color = inactiveColor,
+                start = Offset(activeWidth, centerY),
+                end = Offset(width, centerY),
+                strokeWidth = 3.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+
+            // Draw Active Track: Wavy Path
+            if (activeWidth > 0f) {
+                val wavePath = Path()
+                wavePath.moveTo(0f, centerY)
+
+                val amplitude = if (isPlaying) 3.5.dp.toPx() else 1.2.dp.toPx()
+                val wavelength = 24.dp.toPx()
+
+                var x = 0f
+                val step = 2.dp.toPx()
+                while (x < activeWidth) {
+                    val phase = x / wavelength * (2 * Math.PI.toFloat()) - phaseShift
+                    val y = centerY + amplitude * kotlin.math.sin(phase)
+                    wavePath.lineTo(x, y)
+                    x += step
+                }
+                wavePath.lineTo(activeWidth, centerY) // snap to center for thumb attachment
+
+                drawPath(
+                    path = wavePath,
+                    color = activeColor,
+                    style = Stroke(width = 3.5.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round)
+                )
+            }
+
+            // Draw Thumb
+            drawCircle(
+                color = activeColor,
+                radius = 6.dp.toPx(),
+                center = Offset(activeWidth, centerY)
+            )
+        }
+    }
 }

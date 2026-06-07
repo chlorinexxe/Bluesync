@@ -427,29 +427,44 @@ class PlaybackService : Service() {
 
                     // Retrieve System queue sequence
                     val queueItems = controller.queue
-                    val systemSongs = mutableListOf<Song>()
                     var matchedIdx = 0
-
                     queueItems?.forEachIndexed { idx, qItem ->
-                        val itemTitle = qItem.description.title?.toString() ?: "Queue Track"
-                        val itemArtist = qItem.description.subtitle?.toString() ?: "Unknown Artist"
-                        val itemIdStr = qItem.queueId.toString()
-                        
+                        val itemTitle = qItem.description.title?.toString() ?: ""
                         if (itemTitle == title) {
                             matchedIdx = idx
                         }
+                    }
 
-                        systemSongs.add(
-                            Song(
-                                id = itemIdStr,
-                                title = itemTitle,
-                                artist = itemArtist,
-                                album = "",
-                                genre = "Streamed",
-                                duration = 0L,
-                                uriString = ""
+                    // We now take the next 5 items starting after matchedIdx with 40x40 JPEGs
+                    val systemSongs = mutableListOf<Song>()
+                    if (queueItems != null && queueItems.isNotEmpty()) {
+                        val startIndex = (matchedIdx + 1) % queueItems.size
+                        for (i in 0 until 5) {
+                            val qIdx = (startIndex + i) % queueItems.size
+                            val qItem = queueItems[qIdx]
+                            val itemTitle = qItem.description.title?.toString() ?: "Queue Track"
+                            val itemArtist = qItem.description.subtitle?.toString() ?: "Unknown Artist"
+                            val itemIdStr = qItem.queueId.toString()
+
+                            var smallArtBase64: String? = null
+                            val iconBitmap = qItem.description.iconBitmap
+                            if (iconBitmap != null) {
+                                smallArtBase64 = getSmallBase64AlbumArt(iconBitmap)
+                            }
+
+                            systemSongs.add(
+                                Song(
+                                    id = itemIdStr,
+                                    title = itemTitle,
+                                    artist = itemArtist,
+                                    album = "",
+                                    genre = "Streamed",
+                                    duration = 0L,
+                                    uriString = "",
+                                    albumArtUri = smallArtBase64
+                                )
                             )
-                        )
+                        }
                     }
 
                     val artBase64 = getBase64AlbumArt(controller = controller)
@@ -474,7 +489,7 @@ class PlaybackService : Service() {
                         currentAlbum = album,
                         currentGenre = genre,
                         currentAlbumArt = artBase64,
-                        songs = if (includeMetadata) systemSongs else null,
+                        songs = systemSongs,
                         maxVolume = maxVol,
                         currentVolume = currentVol,
                         shuffleActive = isShuffle,
@@ -511,6 +526,42 @@ class PlaybackService : Service() {
 
                     val artBase64 = currentSong?.let { getBase64AlbumArt(song = it) }
 
+                    // Construct next 5 upcoming tracks for client with 40x40 artwork thumbnail base64
+                    val nextSongsToSend = mutableListOf<Song>()
+                    val nativeSongs = _hostSongs.value
+                    if (nativeSongs.isNotEmpty()) {
+                        val startIndex = (idx + 1) % nativeSongs.size
+                        for (i in 0 until 5) {
+                            val nIdx = (startIndex + i) % nativeSongs.size
+                            val songItem = nativeSongs[nIdx]
+
+                            var smallArtBase64: String? = null
+                            if (songItem.albumArtUri != null) {
+                                try {
+                                    val bitmap = getLocalAlbumArtBitmap(applicationContext, songItem.albumArtUri)
+                                    if (bitmap != null) {
+                                        smallArtBase64 = getSmallBase64AlbumArt(bitmap)
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Fail to get native small art", e)
+                                }
+                            }
+
+                            nextSongsToSend.add(
+                                Song(
+                                    id = songItem.id,
+                                    title = songItem.title,
+                                    artist = songItem.artist,
+                                    album = songItem.album,
+                                    genre = songItem.genre,
+                                    duration = songItem.duration,
+                                    uriString = "",
+                                    albumArtUri = smallArtBase64
+                                )
+                            )
+                        }
+                    }
+
                     BluetoothStateUpdate(
                         status = statusStr,
                         currentIndex = idx,
@@ -521,7 +572,7 @@ class PlaybackService : Service() {
                         currentAlbum = currentSong?.album,
                         currentGenre = currentSong?.genre,
                         currentAlbumArt = artBase64,
-                        songs = if (includeMetadata) _hostSongs.value else null,
+                        songs = nextSongsToSend,
                         maxVolume = maxVol,
                         currentVolume = currentVol,
                         shuffleActive = isShuffle,
@@ -542,6 +593,19 @@ class PlaybackService : Service() {
             }
 
             bluetoothEngine.sendStateUpdate(update)
+        }
+    }
+
+    private fun getSmallBase64AlbumArt(bitmap: android.graphics.Bitmap): String {
+        return try {
+            val outputStream = java.io.ByteArrayOutputStream()
+            val scaled = android.graphics.Bitmap.createScaledBitmap(bitmap, 40, 40, true)
+            scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 45, outputStream)
+            val bytes = outputStream.toByteArray()
+            val base64Encoded = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+            "data:image/jpeg;base64,$base64Encoded"
+        } catch (e: Exception) {
+            ""
         }
     }
 
@@ -733,15 +797,6 @@ class PlaybackService : Service() {
             android.app.PendingIntent.FLAG_UPDATE_CURRENT
         }
 
-        val prevIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_PREV }
-        val prevPending = android.app.PendingIntent.getService(this, 1, prevIntent, flag)
-
-        val playIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_PLAY_PAUSE }
-        val playPending = android.app.PendingIntent.getService(this, 2, playIntent, flag)
-
-        val nextIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_NEXT }
-        val nextPending = android.app.PendingIntent.getService(this, 3, nextIntent, flag)
-
         val openAppIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
@@ -750,31 +805,48 @@ class PlaybackService : Service() {
         } else null
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle(trackInfo.title)
-            .setContentText(trackInfo.artist)
-            .setSubText(modeText)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(openAppPending)
-            .addAction(android.R.drawable.ic_media_previous, "Previous", prevPending)
-            .addAction(
-                if (trackInfo.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
-                if (trackInfo.isPlaying) "Pause" else "Play",
-                playPending
-            )
-            .addAction(android.R.drawable.ic_media_next, "Next", nextPending)
 
-        if (trackInfo.albumArt != null) {
-            builder.setLargeIcon(trackInfo.albumArt)
-        }
+        if (isHostMode.value) {
+            val detail = if (hostUseNotificationHook.value) "Broadcasting local active controllers" else "Broadcasting native Media3 player"
+            builder.setContentTitle("BlueSync Host Bridge Active")
+                .setContentText(detail)
+                .setSubText("Host Terminal")
+        } else {
+            val prevIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_PREV }
+            val prevPending = android.app.PendingIntent.getService(this, 1, prevIntent, flag)
 
-        val session = mediaSession
-        if (session != null) {
-            val mediaStyle = androidx.media3.session.MediaStyleNotificationHelper.MediaStyle(session)
-                .setShowActionsInCompactView(0, 1, 2)
-            builder.setStyle(mediaStyle)
+            val playIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_PLAY_PAUSE }
+            val playPending = android.app.PendingIntent.getService(this, 2, playIntent, flag)
+
+            val nextIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_NEXT }
+            val nextPending = android.app.PendingIntent.getService(this, 3, nextIntent, flag)
+
+            builder.setContentTitle(trackInfo.title)
+                .setContentText(trackInfo.artist)
+                .setSubText("Client Remote")
+                .addAction(android.R.drawable.ic_media_previous, "Previous", prevPending)
+                .addAction(
+                    if (trackInfo.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                    if (trackInfo.isPlaying) "Pause" else "Play",
+                    playPending
+                )
+                .addAction(android.R.drawable.ic_media_next, "Next", nextPending)
+
+            if (trackInfo.albumArt != null) {
+                builder.setLargeIcon(trackInfo.albumArt)
+            }
+
+            val session = mediaSession
+            if (session != null) {
+                val mediaStyle = androidx.media3.session.MediaStyleNotificationHelper.MediaStyle(session)
+                    .setShowActionsInCompactView(0, 1, 2)
+                builder.setStyle(mediaStyle)
+            }
         }
 
         val notification = builder.build()
