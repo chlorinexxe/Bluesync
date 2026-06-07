@@ -1,0 +1,392 @@
+package com.example.bluetooth
+
+import android.annotation.SuppressLint
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothServerSocket
+import android.bluetooth.BluetoothSocket
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
+import android.util.Log
+import com.example.model.BluetoothCommand
+import com.example.model.BluetoothStateUpdate
+import com.squareup.moshi.Moshi
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.BufferedReader
+import java.io.BufferedWriter
+import java.io.IOException
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
+import java.io.PrintWriter
+import java.util.UUID
+
+private const val TAG = "BluetoothEngine"
+
+enum class BluetoothConnectionState {
+    DISCONNECTED,
+    CONNECTING,
+    CONNECTED,
+    LISTENING
+}
+
+class BluetoothConnectionEngine(private val context: Context) {
+
+    private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
+    
+    private val moshi = Moshi.Builder().build()
+    private val commandAdapter = moshi.adapter(BluetoothCommand::class.java)
+    private val updateAdapter = moshi.adapter(BluetoothStateUpdate::class.java)
+
+    private val _connectionState = MutableStateFlow(BluetoothConnectionState.DISCONNECTED)
+    val connectionState: StateFlow<BluetoothConnectionState> = _connectionState.asStateFlow()
+
+    private val _connectedDeviceName = MutableStateFlow<String?>(null)
+    val connectedDeviceName: StateFlow<String?> = _connectedDeviceName.asStateFlow()
+
+    // Scanning State
+    private val _isScanning = MutableStateFlow(false)
+    val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+
+    private val _discoveredDevices = MutableStateFlow<List<BluetoothDevice>>(emptyList())
+    val discoveredDevices: StateFlow<List<BluetoothDevice>> = _discoveredDevices.asStateFlow()
+
+    private var serverSocket: BluetoothServerSocket? = null
+    private var clientSocket: BluetoothSocket? = null
+    
+    private var writer: PrintWriter? = null
+    private var reader: BufferedReader? = null
+
+    private val ioDispatcher = Dispatchers.IO
+    private val scope = CoroutineScope(Dispatchers.Default + Job())
+
+    private var connectionJob: Job? = null
+    private var listeningJob: Job? = null
+    private var receiverRegistered = false
+
+    // Callbacks
+    var onCommandReceived: ((BluetoothCommand) -> Unit)? = null
+    var onStateReceived: ((BluetoothStateUpdate) -> Unit)? = null
+    var onConnectionStateChanged: ((BluetoothConnectionState) -> Unit)? = null
+
+    companion object {
+        val SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB")
+    }
+
+    private val discoveryReceiver = object : BroadcastReceiver() {
+        @SuppressLint("MissingPermission")
+        override fun onReceive(context: Context?, intent: Intent?) {
+            intent ?: return
+            val action = intent.action
+            if (BluetoothDevice.ACTION_FOUND == action) {
+                val device: BluetoothDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
+                }
+
+                if (device != null) {
+                    val currentList = _discoveredDevices.value
+                    if (!currentList.any { it.address == device.address }) {
+                        _discoveredDevices.value = currentList + device
+                        Log.d(TAG, "Discovered Bluetooth Device: ${device.name ?: "Unknown"} [${device.address}]")
+                    }
+                }
+            } else if (BluetoothAdapter.ACTION_DISCOVERY_FINISHED == action) {
+                Log.d(TAG, "Bluetooth Scan finished.")
+                _isScanning.value = false
+            }
+        }
+    }
+
+    fun isBluetoothSupported(): Boolean = bluetoothAdapter != null
+
+    fun isBluetoothEnabled(): Boolean = bluetoothAdapter?.isEnabled ?: false
+
+    @SuppressLint("MissingPermission")
+    fun getPairedDevices(): List<BluetoothDevice> {
+        if (!hasBluetoothConnectPermission()) return emptyList()
+        return bluetoothAdapter?.bondedDevices?.toList() ?: emptyList()
+    }
+
+    private fun hasBluetoothConnectPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+    }
+
+    private fun hasBluetoothScanPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_SCAN) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } else {
+            true
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startDeviceDiscovery() {
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) return
+        if (!hasBluetoothScanPermission()) return
+
+        // Register Receiver if not registered
+        if (!receiverRegistered) {
+            val filter = IntentFilter().apply {
+                addAction(BluetoothDevice.ACTION_FOUND)
+                addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
+            }
+            context.registerReceiver(discoveryReceiver, filter)
+            receiverRegistered = true
+        }
+
+        _discoveredDevices.value = emptyList()
+        _isScanning.value = true
+
+        if (bluetoothAdapter.isDiscovering) {
+            bluetoothAdapter.cancelDiscovery()
+        }
+        bluetoothAdapter.startDiscovery()
+        Log.d(TAG, "Initiated Active Bluetooth Scan")
+    }
+
+    @SuppressLint("MissingPermission")
+    fun stopDeviceDiscovery() {
+        if (bluetoothAdapter?.isDiscovering == true) {
+            bluetoothAdapter.cancelDiscovery()
+        }
+        _isScanning.value = false
+        unregisterReceiver()
+    }
+
+    private fun unregisterReceiver() {
+        if (receiverRegistered) {
+            try {
+                context.unregisterReceiver(discoveryReceiver)
+            } catch (e: Exception) {
+                Log.e(TAG, "Unregister receiver fail", e)
+            }
+            receiverRegistered = false
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun startHostServer() {
+        if (!isBluetoothEnabled() || !hasBluetoothConnectPermission()) {
+            _connectionState.value = BluetoothConnectionState.DISCONNECTED
+            return
+        }
+
+        cleanup()
+        _connectionState.value = BluetoothConnectionState.LISTENING
+        onConnectionStateChanged?.invoke(BluetoothConnectionState.LISTENING)
+        _connectedDeviceName.value = null
+
+        listeningJob = scope.launch(ioDispatcher) {
+            try {
+                Log.d(TAG, "Starting RFCOMM server socket...")
+                serverSocket = bluetoothAdapter?.listenUsingRfcommWithServiceRecord("BlueSyncServer", SPP_UUID)
+                
+                var socket: BluetoothSocket? = null
+                while (connectionState.value == BluetoothConnectionState.LISTENING) {
+                    try {
+                        socket = serverSocket?.accept()
+                        if (socket != null) {
+                            Log.d(TAG, "Accepted connection from client!")
+                            break
+                        }
+                    } catch (e: IOException) {
+                        Log.e(TAG, "ServerSocket accept failed / closed", e)
+                        break
+                    }
+                }
+
+                if (socket != null) {
+                    manageConnectedSocket(socket, isHost = true)
+                } else {
+                    _connectionState.value = BluetoothConnectionState.DISCONNECTED
+                    onConnectionStateChanged?.invoke(BluetoothConnectionState.DISCONNECTED)
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed in startHostServer", e)
+                _connectionState.value = BluetoothConnectionState.DISCONNECTED
+                onConnectionStateChanged?.invoke(BluetoothConnectionState.DISCONNECTED)
+            } finally {
+                closeServerSocketOnly()
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun connectToDevice(device: BluetoothDevice) {
+        if (!isBluetoothEnabled() || !hasBluetoothConnectPermission()) {
+            _connectionState.value = BluetoothConnectionState.DISCONNECTED
+            return
+        }
+
+        cleanup()
+        _connectionState.value = BluetoothConnectionState.CONNECTING
+        onConnectionStateChanged?.invoke(BluetoothConnectionState.CONNECTING)
+        _connectedDeviceName.value = device.name ?: "Unknown Device"
+
+        connectionJob = scope.launch(ioDispatcher) {
+            try {
+                Log.d(TAG, "Connecting to device: ${device.name} [${device.address}]")
+                val socket = device.createRfcommSocketToServiceRecord(SPP_UUID)
+                
+                if (bluetoothAdapter?.isDiscovering == true) {
+                    bluetoothAdapter.cancelDiscovery() // Cancel scan to improve connection performance
+                }
+                
+                socket.connect()
+                Log.d(TAG, "Connected successfully!")
+                manageConnectedSocket(socket, isHost = false)
+            } catch (e: Exception) {
+                Log.e(TAG, "Connection failed", e)
+                _connectionState.value = BluetoothConnectionState.DISCONNECTED
+                onConnectionStateChanged?.invoke(BluetoothConnectionState.DISCONNECTED)
+                _connectedDeviceName.value = null
+                cleanup()
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun manageConnectedSocket(socket: BluetoothSocket, isHost: Boolean) {
+        clientSocket = socket
+        _connectionState.value = BluetoothConnectionState.CONNECTED
+        onConnectionStateChanged?.invoke(BluetoothConnectionState.CONNECTED)
+        
+        try {
+            _connectedDeviceName.value = socket.remoteDevice?.name ?: "Remote Controller"
+        } catch (e: SecurityException) {
+            _connectedDeviceName.value = "Remote Device"
+        }
+
+        scope.launch(ioDispatcher) {
+            try {
+                val outputStream = socket.outputStream
+                writer = PrintWriter(BufferedWriter(OutputStreamWriter(outputStream, "UTF-8")), true)
+                
+                val inputStream = socket.inputStream
+                reader = BufferedReader(InputStreamReader(inputStream, "UTF-8"))
+
+                Log.d(TAG, "I/O Readers/Writers initialized, listening for data...")
+
+                while (connectionState.value == BluetoothConnectionState.CONNECTED) {
+                    val line = reader?.readLine() ?: break // socket closed
+                    Log.d(TAG, "Received raw line: $line")
+                    
+                    if (isHost) {
+                        try {
+                            val cmd = commandAdapter.fromJson(line)
+                            if (cmd != null) {
+                                withContext(Dispatchers.Main) {
+                                    onCommandReceived?.invoke(cmd)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to parse command payload: $line", e)
+                        }
+                    } else {
+                        try {
+                            val stateUpdate = updateAdapter.fromJson(line)
+                            if (stateUpdate != null) {
+                                withContext(Dispatchers.Main) {
+                                    onStateReceived?.invoke(stateUpdate)
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to parse state update payload: $line", e)
+                        }
+                    }
+                }
+            } catch (e: IOException) {
+                Log.e(TAG, "Socket read/write thread error/interrupted", e)
+            } finally {
+                Log.d(TAG, "Cleaning up sockets...")
+                _connectionState.value = BluetoothConnectionState.DISCONNECTED
+                onConnectionStateChanged?.invoke(BluetoothConnectionState.DISCONNECTED)
+                _connectedDeviceName.value = null
+                cleanup()
+            }
+        }
+    }
+
+    fun sendCommand(command: BluetoothCommand) {
+        if (_connectionState.value != BluetoothConnectionState.CONNECTED) return
+        scope.launch(ioDispatcher) {
+            try {
+                val json = commandAdapter.toJson(command)
+                writer?.println(json)
+                Log.d(TAG, "Sent command: $json")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to send command", e)
+            }
+        }
+    }
+
+    fun sendStateUpdate(stateUpdate: BluetoothStateUpdate) {
+        if (_connectionState.value != BluetoothConnectionState.CONNECTED) return
+        scope.launch(ioDispatcher) {
+            try {
+                val json = updateAdapter.toJson(stateUpdate)
+                writer?.println(json)
+                Log.d(TAG, "Sent state update: $json")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to send state update", e)
+            }
+        }
+    }
+
+    private fun closeServerSocketOnly() {
+        try {
+            serverSocket?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing server socket", e)
+        }
+        serverSocket = null
+    }
+
+    fun cleanup() {
+        stopDeviceDiscovery()
+        listeningJob?.cancel()
+        listeningJob = null
+        connectionJob?.cancel()
+        connectionJob = null
+
+        closeServerSocketOnly()
+
+        try {
+            writer?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing writer", e)
+        }
+        writer = null
+
+        try {
+            reader?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing reader", e)
+        }
+        reader = null
+
+        try {
+            clientSocket?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing client socket", e)
+        }
+        clientSocket = null
+    }
+}

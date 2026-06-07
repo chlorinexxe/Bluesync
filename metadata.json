@@ -1,0 +1,6 @@
+{
+  "name": "BlueSync Player",
+  "description": "A premium offline-first Bluetooth remote control and synchronized music player server.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
