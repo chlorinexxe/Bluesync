@@ -20,6 +20,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -299,9 +301,16 @@ fun PremiumPlayerUI(
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { map ->
-        val ok = map.values.all { it }
-        bluetoothPermissionGranted = ok
-        if (ok) {
+        // We prioritize Bluetooth permissions for setting the connection state
+        val btOk = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (map[Manifest.permission.BLUETOOTH_SCAN] == true) &&
+            (map[Manifest.permission.BLUETOOTH_CONNECT] == true) &&
+            (map[Manifest.permission.BLUETOOTH_ADVERTISE] == true)
+        } else {
+            true
+        }
+        bluetoothPermissionGranted = btOk
+        if (btOk) {
             viewModel.refreshPairedDevices()
         }
     }
@@ -312,13 +321,16 @@ fun PremiumPlayerUI(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             perms.add(Manifest.permission.BLUETOOTH_SCAN)
             perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+            perms.add(Manifest.permission.BLUETOOTH_ADVERTISE)
         }
-        if (perms.isNotEmpty()) {
-            permissionLauncher.launch(perms.toTypedArray())
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            perms.add(Manifest.permission.READ_MEDIA_AUDIO)
+            perms.add(Manifest.permission.POST_NOTIFICATIONS)
         } else {
-            bluetoothPermissionGranted = true
-            viewModel.refreshPairedDevices()
+            perms.add(Manifest.permission.READ_EXTERNAL_STORAGE)
         }
+        
+        permissionLauncher.launch(perms.toTypedArray())
     }
 
     Box(
@@ -332,6 +344,7 @@ fun PremiumPlayerUI(
     ) {
         val configuration = LocalConfiguration.current
         val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        val isSmallScreen = !isLandscape && configuration.screenHeightDp < 780
         val auth = checkNotificationFilterAuth(context)
 
         if (isLandscape) {
@@ -564,8 +577,8 @@ fun PremiumPlayerUI(
             Card(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1.3f)
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                    .weight(if (isSmallScreen) 1.5f else 1.3f)
+                    .padding(horizontal = 16.dp, vertical = if (isSmallScreen) 4.dp else 8.dp),
                 shape = RoundedCornerShape(24.dp),
                 colors = CardDefaults.cardColors(containerColor = GlassSurface),
                 border = androidx.compose.foundation.BorderStroke(1.dp, GlassBorder)
@@ -573,14 +586,15 @@ fun PremiumPlayerUI(
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(20.dp),
-                    verticalArrangement = Arrangement.SpaceBetween,
+                        .verticalScroll(rememberScrollState())
+                        .padding(if (isSmallScreen) 12.dp else 20.dp),
+                    verticalArrangement = if (isSmallScreen) Arrangement.spacedBy(8.dp) else Arrangement.SpaceBetween,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     // Album art cover slot (Fully supports MediaStore and missing states gracefully)
                     Box(
                         modifier = Modifier
-                            .size(125.dp)
+                            .size(if (isSmallScreen) 80.dp else 125.dp)
                             .clip(RoundedCornerShape(16.dp))
                             .background(Color.White.copy(alpha = 0.05f))
                             .border(1.dp, GlassBorder, RoundedCornerShape(16.dp)),
@@ -599,15 +613,17 @@ fun PremiumPlayerUI(
                                     imageVector = if (hostUseNotificationHook) Icons.Rounded.WifiTethering else Icons.Rounded.Headphones,
                                     contentDescription = "Fallback album art icon",
                                     tint = if (isHostMode) CyanGlow else RosePulse,
-                                    modifier = Modifier.size(40.dp)
+                                    modifier = Modifier.size(if (isSmallScreen) 26.dp else 40.dp)
                                 )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = currentTrackGenre,
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.LightGray.copy(alpha = 0.5f)
-                                )
+                                if (!isSmallScreen) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = currentTrackGenre,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color.LightGray.copy(alpha = 0.5f)
+                                    )
+                                }
                             }
                         }
                     }
@@ -619,7 +635,7 @@ fun PremiumPlayerUI(
                     ) {
                         Text(
                             text = currentTrackTitle,
-                            fontSize = 20.sp,
+                            fontSize = if (isSmallScreen) 16.sp else 20.sp,
                             fontWeight = FontWeight.Bold,
                             color = PureWhite,
                             maxLines = 1,
@@ -628,14 +644,14 @@ fun PremiumPlayerUI(
                                 .basicMarquee()
                                 .padding(horizontal = 10.dp)
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(if (isSmallScreen) 2.dp else 4.dp))
                         Text(
                             text = currentTrackArtist,
-                            fontSize = 13.sp,
+                            fontSize = if (isSmallScreen) 11.sp else 13.sp,
                             color = Color.LightGray.copy(alpha = 0.7f),
                             maxLines = 1
                         )
-                        if (currentTrackAlbum.isNotEmpty()) {
+                        if (currentTrackAlbum.isNotEmpty() && !isSmallScreen) {
                             Text(
                                 text = "Album: $currentTrackAlbum",
                                 fontSize = 11.sp,
@@ -649,24 +665,24 @@ fun PremiumPlayerUI(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 4.dp)
+                            .padding(vertical = if (isSmallScreen) 1.dp else 4.dp)
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                                .padding(horizontal = 8.dp, vertical = if (isSmallScreen) 1.dp else 2.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.GraphicEq,
                                 contentDescription = "Active Seek Label Icon",
                                 tint = if (isHostMode) CyanGlow else RosePulse,
-                                modifier = Modifier.size(14.dp)
+                                modifier = Modifier.size(if (isSmallScreen) 11.dp else 14.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
                                 text = "LIVE AUDIO PLAYHEAD",
-                                fontSize = 9.sp,
+                                fontSize = if (isSmallScreen) 8.sp else 9.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (isHostMode) CyanGlow.copy(alpha = 0.8f) else RosePulse.copy(alpha = 0.8f),
                                 letterSpacing = 1.sp
@@ -724,7 +740,7 @@ fun PremiumPlayerUI(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 4.dp),
+                            .padding(vertical = if (isSmallScreen) 1.dp else 4.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -734,7 +750,7 @@ fun PremiumPlayerUI(
                                 hapticDriver.triggerClick()
                                 viewModel.toggleShuffle()
                             },
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier.size(if (isSmallScreen) 34.dp else 40.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.Shuffle,
@@ -744,7 +760,7 @@ fun PremiumPlayerUI(
                                 } else {
                                     Color.Gray
                                 },
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(if (isSmallScreen) 17.dp else 20.dp)
                             )
                         }
 
@@ -754,13 +770,13 @@ fun PremiumPlayerUI(
                                 hapticDriver.triggerSkipPulse()
                                 viewModel.playPrevious()
                             },
-                            modifier = Modifier.size(48.dp)
+                            modifier = Modifier.size(if (isSmallScreen) 40.dp else 48.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.SkipPrevious,
                                 contentDescription = "Skip previous button",
                                 tint = PureWhite,
-                                modifier = Modifier.size(28.dp)
+                                modifier = Modifier.size(if (isSmallScreen) 24.dp else 28.dp)
                             )
                         }
 
@@ -772,13 +788,13 @@ fun PremiumPlayerUI(
                             },
                             containerColor = if (isHostMode) CyanGlow else RosePulse,
                             shape = CircleShape,
-                            modifier = Modifier.size(54.dp)
+                            modifier = Modifier.size(if (isSmallScreen) 46.dp else 54.dp)
                         ) {
                             Icon(
                                 imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                                 contentDescription = "Play toggle pause button",
                                 tint = if (isHostMode) Color.Black else PureWhite,
-                                modifier = Modifier.size(28.dp)
+                                modifier = Modifier.size(if (isSmallScreen) 24.dp else 28.dp)
                             )
                         }
 
@@ -788,13 +804,13 @@ fun PremiumPlayerUI(
                                 hapticDriver.triggerSkipPulse()
                                 viewModel.playNext()
                             },
-                            modifier = Modifier.size(48.dp)
+                            modifier = Modifier.size(if (isSmallScreen) 40.dp else 48.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Rounded.SkipNext,
                                 contentDescription = "Skip next button",
                                 tint = PureWhite,
-                                modifier = Modifier.size(28.dp)
+                                modifier = Modifier.size(if (isSmallScreen) 24.dp else 28.dp)
                             )
                         }
 
@@ -804,7 +820,7 @@ fun PremiumPlayerUI(
                                 hapticDriver.triggerClick()
                                 viewModel.toggleRepeat()
                             },
-                            modifier = Modifier.size(40.dp)
+                            modifier = Modifier.size(if (isSmallScreen) 34.dp else 40.dp)
                         ) {
                             Icon(
                                 imageVector = if (repeatStateString == "ONE") Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
@@ -814,36 +830,36 @@ fun PremiumPlayerUI(
                                 } else {
                                     Color.Gray
                                 },
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(if (isSmallScreen) 17.dp else 20.dp)
                             )
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(if (isSmallScreen) 2.dp else 6.dp))
 
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                            .padding(horizontal = 8.dp, vertical = if (isSmallScreen) 1.dp else 2.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(
                             imageVector = Icons.Rounded.VolumeUp,
                             contentDescription = "Active Volume Label Icon",
                             tint = if (isHostMode) CyanGlow else RosePulse,
-                            modifier = Modifier.size(14.dp)
+                            modifier = Modifier.size(if (isSmallScreen) 11.dp else 14.dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
                             text = "REMOTE AUDIO VOLUME CONTROL",
-                            fontSize = 9.sp,
+                            fontSize = if (isSmallScreen) 8.sp else 9.sp,
                             fontWeight = FontWeight.Bold,
                             color = if (isHostMode) CyanGlow.copy(alpha = 0.8f) else RosePulse.copy(alpha = 0.8f),
                             letterSpacing = 1.sp
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(if (isSmallScreen) 1.dp else 4.dp))
 
                     // Volume Control Slider Row
                     Row(
@@ -856,7 +872,7 @@ fun PremiumPlayerUI(
                             imageVector = if (currentVolumeVal == 0) Icons.Rounded.VolumeMute else Icons.Rounded.VolumeUp,
                             contentDescription = "Volume State Icon",
                             tint = if (isHostMode) CyanGlow else RosePulse,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(if (isSmallScreen) 16.dp else 20.dp)
                         )
 
                         Slider(
@@ -884,7 +900,7 @@ fun PremiumPlayerUI(
                             imageVector = Icons.Rounded.VolumeUp,
                             contentDescription = "Volume Up Icon",
                             tint = if (isHostMode) CyanGlow else RosePulse,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(if (isSmallScreen) 16.dp else 20.dp)
                         )
                     }
                 }
@@ -1423,7 +1439,8 @@ private fun checkNotificationFilterAuth(context: Context): Boolean {
 private fun checkRequiredPermissions(context: Context): Boolean {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         return context.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED &&
-                context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+                context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED &&
+                context.checkSelfPermission(Manifest.permission.BLUETOOTH_ADVERTISE) == PackageManager.PERMISSION_GRANTED
     }
     return true
 }
@@ -1756,6 +1773,8 @@ fun LandscapePlayerLayout(
                             )
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(12.dp))
 
                     // Volume Control Slider Row
                     Row(

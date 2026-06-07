@@ -389,95 +389,206 @@ class PlaybackService : Service() {
                 15
             }
 
-            val update = if (hostUseNotificationHook.value) {
-                val controller = MyNotificationListener.getActiveController()
-                if (controller != null) {
-                    val metadata = controller.metadata
-                    val playbackState = controller.playbackState
+            // Media3 ExoPlayer is single-threaded and MUST only be accessed on Main Thread
+            val player = exoPlayer
+            val playerExists = player != null
+            val playerIsPlaying = player?.isPlaying ?: false
+            val playerPlaybackState = player?.playbackState ?: 0
+            val playerCurrentIndex = player?.currentMediaItemIndex ?: 0
+            val playerShuffleModeEnabled = player?.shuffleModeEnabled ?: false
+            val playerRepeatMode = player?.repeatMode ?: 0
+            val playerCurrentPosition = player?.currentPosition ?: 0L
+            val playerDuration = player?.duration ?: 0L
 
-                    val title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: "Disconnected / Idle"
-                    val artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: "Poweramp Intercept"
-                    val album = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: ""
-                    val genre = metadata?.getString(MediaMetadata.METADATA_KEY_GENRE) ?: "Various"
-                    val duration = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
+            withContext(Dispatchers.IO) {
+                val update = if (hostUseNotificationHook.value) {
+                    val controller = MyNotificationListener.getActiveController()
+                    if (controller != null) {
+                        val metadata = controller.metadata
+                        val playbackState = controller.playbackState
 
-                    val rawState = playbackState?.state ?: PlaybackState.STATE_NONE
-                    val statusStr = when (rawState) {
-                        PlaybackState.STATE_PLAYING -> "PLAYING"
-                        PlaybackState.STATE_PAUSED -> "PAUSED"
-                        PlaybackState.STATE_BUFFERING -> "BUFFERING"
-                        else -> "IDLE"
+                        val title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: "Disconnected / Idle"
+                        val artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: "Poweramp Intercept"
+                        val album = metadata?.getString(MediaMetadata.METADATA_KEY_ALBUM) ?: ""
+                        val genre = metadata?.getString(MediaMetadata.METADATA_KEY_GENRE) ?: "Various"
+                        val duration = metadata?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L
+
+                        val rawState = playbackState?.state ?: PlaybackState.STATE_NONE
+                        val statusStr = when (rawState) {
+                            PlaybackState.STATE_PLAYING -> "PLAYING"
+                            PlaybackState.STATE_PAUSED -> "PAUSED"
+                            PlaybackState.STATE_BUFFERING -> "BUFFERING"
+                            else -> "IDLE"
+                        }
+
+                        val isShuffle = try {
+                            val method = controller.javaClass.getMethod("getShuffleMode")
+                            val modeValue = method.invoke(controller) as Int
+                            modeValue != 0
+                        } catch (e: Exception) {
+                            false
+                        }
+                        val isRepeat = try {
+                            val method = controller.javaClass.getMethod("getRepeatMode")
+                            val modeValue = method.invoke(controller) as Int
+                            when (modeValue) {
+                                1 -> "ONE"
+                                2 -> "ALL"
+                                else -> "OFF"
+                            }
+                        } catch (e: Exception) {
+                            "OFF"
+                        }
+
+                        // Retrieve System queue sequence
+                        val queueItems = controller.queue
+                        var matchedIdx = 0
+                        queueItems?.forEachIndexed { idx, qItem ->
+                            val itemTitle = qItem.description.title?.toString() ?: ""
+                            if (itemTitle == title) {
+                                matchedIdx = idx
+                            }
+                        }
+
+                        // We now take the next 5 items starting after matchedIdx with 40x40 JPEGs
+                        val systemSongs = mutableListOf<Song>()
+                        if (queueItems != null && queueItems.isNotEmpty()) {
+                            val startIndex = (matchedIdx + 1) % queueItems.size
+                            for (i in 0 until 5) {
+                                val qIdx = (startIndex + i) % queueItems.size
+                                val qItem = queueItems[qIdx]
+                                val itemTitle = qItem.description.title?.toString() ?: "Queue Track"
+                                val itemArtist = qItem.description.subtitle?.toString() ?: "Unknown Artist"
+                                val itemIdStr = qItem.queueId.toString()
+
+                                var smallArtBase64: String? = null
+                                val iconBitmap = qItem.description.iconBitmap
+                                if (iconBitmap != null) {
+                                    smallArtBase64 = getSmallBase64AlbumArt(iconBitmap)
+                                }
+
+                                systemSongs.add(
+                                    Song(
+                                        id = itemIdStr,
+                                        title = itemTitle,
+                                        artist = itemArtist,
+                                        album = "",
+                                        genre = "Streamed",
+                                        duration = 0L,
+                                        uriString = "",
+                                        albumArtUri = smallArtBase64
+                                    )
+                                )
+                            }
+                        } else {
+                            // Fallback: Match current intercepted title to local scanned host library
+                            val nativeSongs = _hostSongs.value
+                            if (nativeSongs.isNotEmpty()) {
+                                var matchedNativeIdx = nativeSongs.indexOfFirst {
+                                    it.title.equals(title, ignoreCase = true) || title.contains(it.title, ignoreCase = true) || it.title.contains(title, ignoreCase = true)
+                                }
+                                if (matchedNativeIdx == -1) matchedNativeIdx = 0
+
+                                val startIndex = (matchedNativeIdx + 1) % nativeSongs.size
+                                for (i in 0 until 5) {
+                                    val nIdx = (startIndex + i) % nativeSongs.size
+                                    val songItem = nativeSongs[nIdx]
+
+                                    var smallArtBase64: String? = null
+                                    if (songItem.albumArtUri != null) {
+                                        try {
+                                            val bitmap = getLocalAlbumArtBitmap(applicationContext, songItem.albumArtUri)
+                                            if (bitmap != null) {
+                                                smallArtBase64 = getSmallBase64AlbumArt(bitmap)
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "Fail to get fallback native small art", e)
+                                        }
+                                    }
+
+                                    systemSongs.add(
+                                        Song(
+                                            id = songItem.id,
+                                            title = songItem.title,
+                                            artist = songItem.artist,
+                                            album = songItem.album,
+                                            genre = songItem.genre,
+                                            duration = songItem.duration,
+                                            uriString = "",
+                                            albumArtUri = smallArtBase64
+                                        )
+                                    )
+                                }
+                            }
+                        }
+
+                        withContext(Dispatchers.Main) {
+                            _hostNotificationSongs.value = systemSongs
+                        }
+
+                        val artBase64 = getBase64AlbumArt(controller = controller)
+
+                        val exactElapsedTime = playbackState?.let { pb ->
+                            if (pb.state == PlaybackState.STATE_PLAYING && pb.lastPositionUpdateTime > 0) {
+                                val diff = android.os.SystemClock.elapsedRealtime() - pb.lastPositionUpdateTime
+                                val speed = if (pb.playbackSpeed > 0f) pb.playbackSpeed else 1.0f
+                                pb.position + (diff * speed).toLong()
+                            } else {
+                                pb.position
+                            }
+                        } ?: 0L
+
+                        BluetoothStateUpdate(
+                            status = statusStr,
+                            currentIndex = matchedIdx,
+                            elapsedTime = exactElapsedTime,
+                            duration = duration,
+                            currentTitle = title,
+                            currentArtist = artist,
+                            currentAlbum = album,
+                            currentGenre = genre,
+                            currentAlbumArt = artBase64,
+                            songs = systemSongs,
+                            maxVolume = maxVol,
+                            currentVolume = currentVol,
+                            shuffleActive = isShuffle,
+                            repeatActive = isRepeat
+                        )
+                    } else {
+                        BluetoothStateUpdate(
+                            status = "IDLE",
+                            currentIndex = 0,
+                            elapsedTime = 0,
+                            duration = 0,
+                            currentTitle = "No Active Player Connected",
+                            currentArtist = "Open Poweramp or local media app",
+                            songs = emptyList(),
+                            maxVolume = maxVol,
+                            currentVolume = currentVol,
+                            shuffleActive = false,
+                            repeatActive = "OFF"
+                        )
                     }
+                } else {
+                    if (playerExists) {
+                        val statusStr = if (playerIsPlaying) "PLAYING" else if (playerPlaybackState == Player.STATE_BUFFERING) "BUFFERING" else "PAUSED"
+                        val idx = playerCurrentIndex
+                        val currentSong = _hostSongs.value.getOrNull(idx)
 
-                    val isShuffle = try {
-                        val method = controller.javaClass.getMethod("getShuffleMode")
-                        val modeValue = method.invoke(controller) as Int
-                        modeValue != 0
-                    } catch (e: Exception) {
-                        false
-                    }
-                    val isRepeat = try {
-                        val method = controller.javaClass.getMethod("getRepeatMode")
-                        val modeValue = method.invoke(controller) as Int
-                        when (modeValue) {
-                            1 -> "ONE"
-                            2 -> "ALL"
+                        val isShuffle = playerShuffleModeEnabled
+                        val isRepeat = when (playerRepeatMode) {
+                            Player.REPEAT_MODE_ONE -> "ONE"
+                            Player.REPEAT_MODE_ALL -> "ALL"
                             else -> "OFF"
                         }
-                    } catch (e: Exception) {
-                        "OFF"
-                    }
 
-                    // Retrieve System queue sequence
-                    val queueItems = controller.queue
-                    var matchedIdx = 0
-                    queueItems?.forEachIndexed { idx, qItem ->
-                        val itemTitle = qItem.description.title?.toString() ?: ""
-                        if (itemTitle == title) {
-                            matchedIdx = idx
-                        }
-                    }
+                        val artBase64 = currentSong?.let { getBase64AlbumArt(song = it) }
 
-                    // We now take the next 5 items starting after matchedIdx with 40x40 JPEGs
-                    val systemSongs = mutableListOf<Song>()
-                    if (queueItems != null && queueItems.isNotEmpty()) {
-                        val startIndex = (matchedIdx + 1) % queueItems.size
-                        for (i in 0 until 5) {
-                            val qIdx = (startIndex + i) % queueItems.size
-                            val qItem = queueItems[qIdx]
-                            val itemTitle = qItem.description.title?.toString() ?: "Queue Track"
-                            val itemArtist = qItem.description.subtitle?.toString() ?: "Unknown Artist"
-                            val itemIdStr = qItem.queueId.toString()
-
-                            var smallArtBase64: String? = null
-                            val iconBitmap = qItem.description.iconBitmap
-                            if (iconBitmap != null) {
-                                smallArtBase64 = getSmallBase64AlbumArt(iconBitmap)
-                            }
-
-                            systemSongs.add(
-                                Song(
-                                    id = itemIdStr,
-                                    title = itemTitle,
-                                    artist = itemArtist,
-                                    album = "",
-                                    genre = "Streamed",
-                                    duration = 0L,
-                                    uriString = "",
-                                    albumArtUri = smallArtBase64
-                                )
-                            )
-                        }
-                    } else {
-                        // Fallback: Match current intercepted title to local scanned host library
+                        // Construct next 5 upcoming tracks for client with 40x40 artwork thumbnail base64
+                        val nextSongsToSend = mutableListOf<Song>()
                         val nativeSongs = _hostSongs.value
                         if (nativeSongs.isNotEmpty()) {
-                            var matchedNativeIdx = nativeSongs.indexOfFirst {
-                                it.title.equals(title, ignoreCase = true) || title.contains(it.title, ignoreCase = true) || it.title.contains(title, ignoreCase = true)
-                            }
-                            if (matchedNativeIdx == -1) matchedNativeIdx = 0
-
-                            val startIndex = (matchedNativeIdx + 1) % nativeSongs.size
+                            val startIndex = (idx + 1) % nativeSongs.size
                             for (i in 0 until 5) {
                                 val nIdx = (startIndex + i) % nativeSongs.size
                                 val songItem = nativeSongs[nIdx]
@@ -490,11 +601,11 @@ class PlaybackService : Service() {
                                             smallArtBase64 = getSmallBase64AlbumArt(bitmap)
                                         }
                                     } catch (e: Exception) {
-                                        Log.e(TAG, "Fail to get fallback native small art", e)
+                                        Log.e(TAG, "Fail to get native small art", e)
                                     }
                                 }
 
-                                systemSongs.add(
+                                nextSongsToSend.add(
                                     Song(
                                         id = songItem.id,
                                         title = songItem.title,
@@ -508,136 +619,39 @@ class PlaybackService : Service() {
                                 )
                             }
                         }
+
+                        BluetoothStateUpdate(
+                            status = statusStr,
+                            currentIndex = idx,
+                            elapsedTime = playerCurrentPosition,
+                            duration = if (playerDuration < 0) 0 else playerDuration,
+                            currentTitle = currentSong?.title,
+                            currentArtist = currentSong?.artist,
+                            currentAlbum = currentSong?.album,
+                            currentGenre = currentSong?.genre,
+                            currentAlbumArt = artBase64,
+                            songs = nextSongsToSend,
+                            maxVolume = maxVol,
+                            currentVolume = currentVol,
+                            shuffleActive = isShuffle,
+                            repeatActive = isRepeat
+                        )
+                    } else {
+                        BluetoothStateUpdate(
+                            status = "IDLE",
+                            currentIndex = 0,
+                            elapsedTime = 0,
+                            duration = 0,
+                            maxVolume = maxVol,
+                            currentVolume = currentVol,
+                            shuffleActive = false,
+                            repeatActive = "OFF"
+                        )
                     }
-
-                    _hostNotificationSongs.value = systemSongs
-
-                    val artBase64 = getBase64AlbumArt(controller = controller)
-
-                    val exactElapsedTime = playbackState?.let { pb ->
-                        if (pb.state == PlaybackState.STATE_PLAYING && pb.lastPositionUpdateTime > 0) {
-                            val diff = android.os.SystemClock.elapsedRealtime() - pb.lastPositionUpdateTime
-                            val speed = if (pb.playbackSpeed > 0f) pb.playbackSpeed else 1.0f
-                            pb.position + (diff * speed).toLong()
-                        } else {
-                            pb.position
-                        }
-                    } ?: 0L
-
-                    BluetoothStateUpdate(
-                        status = statusStr,
-                        currentIndex = matchedIdx,
-                        elapsedTime = exactElapsedTime,
-                        duration = duration,
-                        currentTitle = title,
-                        currentArtist = artist,
-                        currentAlbum = album,
-                        currentGenre = genre,
-                        currentAlbumArt = artBase64,
-                        songs = systemSongs,
-                        maxVolume = maxVol,
-                        currentVolume = currentVol,
-                        shuffleActive = isShuffle,
-                        repeatActive = isRepeat
-                    )
-                } else {
-                    BluetoothStateUpdate(
-                        status = "IDLE",
-                        currentIndex = 0,
-                        elapsedTime = 0,
-                        duration = 0,
-                        currentTitle = "No Active Player Connected",
-                        currentArtist = "Open Poweramp or local media app",
-                        songs = emptyList(),
-                        maxVolume = maxVol,
-                        currentVolume = currentVol,
-                        shuffleActive = false,
-                        repeatActive = "OFF"
-                    )
                 }
-            } else {
-                val player = exoPlayer
-                if (player != null) {
-                    val statusStr = if (player.isPlaying) "PLAYING" else if (player.playbackState == Player.STATE_BUFFERING) "BUFFERING" else "PAUSED"
-                    val idx = player.currentMediaItemIndex
-                    val currentSong = _hostSongs.value.getOrNull(idx)
 
-                    val isShuffle = player.shuffleModeEnabled
-                    val isRepeat = when (player.repeatMode) {
-                        Player.REPEAT_MODE_ONE -> "ONE"
-                        Player.REPEAT_MODE_ALL -> "ALL"
-                        else -> "OFF"
-                    }
-
-                    val artBase64 = currentSong?.let { getBase64AlbumArt(song = it) }
-
-                    // Construct next 5 upcoming tracks for client with 40x40 artwork thumbnail base64
-                    val nextSongsToSend = mutableListOf<Song>()
-                    val nativeSongs = _hostSongs.value
-                    if (nativeSongs.isNotEmpty()) {
-                        val startIndex = (idx + 1) % nativeSongs.size
-                        for (i in 0 until 5) {
-                            val nIdx = (startIndex + i) % nativeSongs.size
-                            val songItem = nativeSongs[nIdx]
-
-                            var smallArtBase64: String? = null
-                            if (songItem.albumArtUri != null) {
-                                try {
-                                    val bitmap = getLocalAlbumArtBitmap(applicationContext, songItem.albumArtUri)
-                                    if (bitmap != null) {
-                                        smallArtBase64 = getSmallBase64AlbumArt(bitmap)
-                                    }
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Fail to get native small art", e)
-                                }
-                            }
-
-                            nextSongsToSend.add(
-                                Song(
-                                    id = songItem.id,
-                                    title = songItem.title,
-                                    artist = songItem.artist,
-                                    album = songItem.album,
-                                    genre = songItem.genre,
-                                    duration = songItem.duration,
-                                    uriString = "",
-                                    albumArtUri = smallArtBase64
-                                )
-                            )
-                        }
-                    }
-
-                    BluetoothStateUpdate(
-                        status = statusStr,
-                        currentIndex = idx,
-                        elapsedTime = player.currentPosition,
-                        duration = if (player.duration < 0) 0 else player.duration,
-                        currentTitle = currentSong?.title,
-                        currentArtist = currentSong?.artist,
-                        currentAlbum = currentSong?.album,
-                        currentGenre = currentSong?.genre,
-                        currentAlbumArt = artBase64,
-                        songs = nextSongsToSend,
-                        maxVolume = maxVol,
-                        currentVolume = currentVol,
-                        shuffleActive = isShuffle,
-                        repeatActive = isRepeat
-                    )
-                } else {
-                    BluetoothStateUpdate(
-                        status = "IDLE",
-                        currentIndex = 0,
-                        elapsedTime = 0,
-                        duration = 0,
-                        maxVolume = maxVol,
-                        currentVolume = currentVol,
-                        shuffleActive = false,
-                        repeatActive = "OFF"
-                    )
-                }
+                bluetoothEngine.sendStateUpdate(update)
             }
-
-            bluetoothEngine.sendStateUpdate(update)
         }
     }
 
