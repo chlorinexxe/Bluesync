@@ -93,6 +93,34 @@ fun PremiumPlayerUI(
     // Scopes and dialog sheets
     var showScanSheet by remember { mutableStateOf(false) }
 
+    val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager }
+    var localVolume by remember { mutableStateOf(audioManager.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)) }
+    val maxColVolume = remember { audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC) }
+
+    val maxVolume = if (isHostMode) {
+        maxColVolume
+    } else {
+        clientState?.maxVolume ?: 15
+    }
+
+    val currentVolumeVal = if (isHostMode) {
+        localVolume
+    } else {
+        clientState?.currentVolume ?: 0
+    }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            if (isHostMode) {
+                val sysVol = audioManager.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+                if (localVolume != sysVol) {
+                    localVolume = sysVol
+                }
+            }
+            kotlinx.coroutines.delay(1000)
+        }
+    }
+
     // Dynamic coloring based on current song
     val currentTrackTitle = if (isHostMode) {
         if (hostUseNotificationHook) {
@@ -604,6 +632,51 @@ fun PremiumPlayerUI(
                             )
                         }
                     }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Volume Control Slider Row
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (currentVolumeVal == 0) Icons.Rounded.VolumeDown else Icons.Rounded.VolumeDown,
+                            contentDescription = "Volume Down Icon",
+                            tint = if (isHostMode) CyanGlow else RosePulse,
+                            modifier = Modifier.size(20.dp)
+                        )
+
+                        Slider(
+                            value = currentVolumeVal.toFloat(),
+                            valueRange = 0f..maxVolume.toFloat(),
+                            onValueChange = { newValue ->
+                                val targetVol = newValue.toInt()
+                                if (isHostMode) {
+                                    localVolume = targetVol
+                                }
+                                viewModel.setVolume(targetVol)
+                                hapticDriver.triggerTick()
+                            },
+                            colors = SliderDefaults.colors(
+                                thumbColor = if (isHostMode) CyanGlow else RosePulse,
+                                activeTrackColor = if (isHostMode) CyanGlow else RosePulse,
+                                inactiveTrackColor = Color.White.copy(alpha = 0.1f)
+                            ),
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 10.dp)
+                        )
+
+                        Icon(
+                            imageVector = Icons.Rounded.VolumeUp,
+                            contentDescription = "Volume Up Icon",
+                            tint = if (isHostMode) CyanGlow else RosePulse,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
 
@@ -664,7 +737,7 @@ fun PremiumPlayerUI(
                             )
                             Spacer(modifier = Modifier.height(6.dp))
                             Text(
-                                text = if (auth) "Poweramp list controls are bound. Play music in your third-party player and client will align!" else "To fetch lists from Poweramp or system active controllers, tap below.",
+                                text = if (auth) "Poweramp list controls are bound. Play music in your third-party player and client will align!" else "To fetch lists from Poweramp or system active controllers, tap below. Look for \"BlueSync Player\" on the following screen and enable its switch.",
                                 fontSize = 11.sp,
                                 color = Color.LightGray.copy(alpha = 0.6f),
                                 textAlign = TextAlign.Center
@@ -674,6 +747,7 @@ fun PremiumPlayerUI(
                                 Button(
                                     onClick = {
                                         hapticDriver.triggerClick()
+                                        android.widget.Toast.makeText(context, "Please find and toggle on 'BlueSync Player' to grant access", android.widget.Toast.LENGTH_LONG).show()
                                         context.startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
                                     },
                                     colors = ButtonDefaults.buttonColors(containerColor = CyanGlow)

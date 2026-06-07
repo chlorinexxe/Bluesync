@@ -209,4 +209,19 @@ class MainViewModel : ViewModel() {
             s.bluetoothEngine.sendCommand(BluetoothCommand("SEEK", seekPosition = positionMs))
         }
     }
+
+    fun setVolume(volumeIndex: Int) {
+        val s = _service.value ?: return
+        if (s.isHostMode.value) {
+            try {
+                val audioManager = s.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+                audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, volumeIndex, android.media.AudioManager.FLAG_SHOW_UI)
+                s.broadcastHostStateToClient()
+            } catch (e: Exception) {
+                Log.e("MainViewModel", "Failed local volume update", e)
+            }
+        } else {
+            s.bluetoothEngine.sendCommand(BluetoothCommand("SET_VOLUME", volume = volumeIndex))
+        }
+    }
 }

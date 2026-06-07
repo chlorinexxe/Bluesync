@@ -16,10 +16,11 @@ data class Song(
 
 @JsonClass(generateAdapter = true)
 data class BluetoothCommand(
-    val command: String, // "PLAY_INDEX", "PAUSE", "RESUME", "NEXT", "PREV", "SEEK", "SKIP_TO_QUEUE_ITEM", "TOGGLE_PLAY"
+    val command: String, // "PLAY_INDEX", "PAUSE", "RESUME", "NEXT", "PREV", "SEEK", "SKIP_TO_QUEUE_ITEM", "TOGGLE_PLAY", "SET_VOLUME"
     val index: Int? = null,
     val id: String? = null,
-    val seekPosition: Long? = null
+    val seekPosition: Long? = null,
+    val volume: Int? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -33,5 +34,7 @@ data class BluetoothStateUpdate(
     val currentAlbum: String? = null,
     val currentGenre: String? = null,
     val currentAlbumArt: String? = null,
-    val songs: List<Song>? = null
+    val songs: List<Song>? = null,
+    val maxVolume: Int? = null,
+    val currentVolume: Int? = null
 )

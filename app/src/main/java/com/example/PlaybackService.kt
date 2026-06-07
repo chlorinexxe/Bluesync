@@ -285,6 +285,19 @@ class PlaybackService : Service() {
 
     private fun handleClientCommand(cmd: BluetoothCommand) {
         scope.launch(Dispatchers.Main) {
+            if (cmd.command == "SET_VOLUME") {
+                cmd.volume?.let { volIndex ->
+                    try {
+                        val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+                        audioManager.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, volIndex, android.media.AudioManager.FLAG_SHOW_UI)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to set volume index", e)
+                    }
+                    broadcastHostStateToClient()
+                }
+                return@launch
+            }
+
             if (hostUseNotificationHook.value) {
                 // Pipe command directly to external player (like Poweramp) via Notification Media Controller
                 MyNotificationListener.executeCommand(
@@ -330,6 +343,18 @@ class PlaybackService : Service() {
     fun broadcastHostStateToClient(includeMetadata: Boolean = false) {
         if (!isHostMode.value) return
         scope.launch(Dispatchers.Main) {
+            val audioManager = getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager
+            val currentVol = try {
+                audioManager.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+            } catch (e: Exception) {
+                0
+            }
+            val maxVol = try {
+                audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+            } catch (e: Exception) {
+                15
+            }
+
             val update = if (hostUseNotificationHook.value) {
                 val controller = MyNotificationListener.getActiveController()
                 if (controller != null) {
@@ -386,7 +411,9 @@ class PlaybackService : Service() {
                         currentArtist = artist,
                         currentAlbum = album,
                         currentGenre = genre,
-                        songs = if (includeMetadata) systemSongs else null
+                        songs = if (includeMetadata) systemSongs else null,
+                        maxVolume = maxVol,
+                        currentVolume = currentVol
                     )
                 } else {
                     BluetoothStateUpdate(
@@ -396,7 +423,9 @@ class PlaybackService : Service() {
                         duration = 0,
                         currentTitle = "No Active Player Connected",
                         currentArtist = "Open Poweramp or local media app",
-                        songs = emptyList()
+                        songs = emptyList(),
+                        maxVolume = maxVol,
+                        currentVolume = currentVol
                     )
                 }
             } else {
@@ -416,10 +445,19 @@ class PlaybackService : Service() {
                         currentAlbum = currentSong?.album,
                         currentGenre = currentSong?.genre,
                         currentAlbumArt = currentSong?.albumArtUri,
-                        songs = if (includeMetadata) _hostSongs.value else null
+                        songs = if (includeMetadata) _hostSongs.value else null,
+                        maxVolume = maxVol,
+                        currentVolume = currentVol
                     )
                 } else {
-                    BluetoothStateUpdate("IDLE", 0, 0, 0)
+                    BluetoothStateUpdate(
+                        status = "IDLE",
+                        currentIndex = 0,
+                        elapsedTime = 0,
+                        duration = 0,
+                        maxVolume = maxVol,
+                        currentVolume = currentVol
+                    )
                 }
             }
 
