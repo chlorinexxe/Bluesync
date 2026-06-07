@@ -85,6 +85,40 @@ class MyNotificationListener : NotificationListenerService() {
                     "NEXT" -> controls.skipToNext()
                     "PREV" -> controls.skipToPrevious()
                     "SEEK" -> seekPosition?.let { controls.seekTo(it) }
+                    "TOGGLE_SHUFFLE" -> {
+                        val currentShuffle = try {
+                            val method = controller.javaClass.getMethod("getShuffleMode")
+                            method.invoke(controller) as Int
+                        } catch (e: Exception) {
+                            0
+                        }
+                        val target = if (currentShuffle == 0) 1 else 0
+                        try {
+                            val setMethod = controls.javaClass.getMethod("setShuffleMode", Int::class.javaPrimitiveType)
+                            setMethod.invoke(controls, target)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Fail to call setShuffleMode", e)
+                        }
+                    }
+                    "TOGGLE_REPEAT" -> {
+                        val currentRepeat = try {
+                            val method = controller.javaClass.getMethod("getRepeatMode")
+                            method.invoke(controller) as Int
+                        } catch (e: Exception) {
+                            0
+                        }
+                        val target = when (currentRepeat) {
+                            0 -> 2
+                            2 -> 1
+                            else -> 0
+                        }
+                        try {
+                            val setMethod = controls.javaClass.getMethod("setRepeatMode", Int::class.javaPrimitiveType)
+                            setMethod.invoke(controls, target)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Fail to call setRepeatMode", e)
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Fail executing third-party command: $command", e)

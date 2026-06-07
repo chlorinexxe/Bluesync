@@ -47,6 +47,13 @@ class PlaybackService : Service() {
     var exoPlayer: ExoPlayer? = null
     lateinit var bluetoothEngine: BluetoothConnectionEngine
         private set
+    var mediaSession: androidx.media3.session.MediaSession? = null
+
+    companion object {
+        const val ACTION_PLAY_PAUSE = "com.example.ACTION_PLAY_PAUSE"
+        const val ACTION_NEXT = "com.example.ACTION_NEXT"
+        const val ACTION_PREV = "com.example.ACTION_PREV"
+    }
 
     val isHostMode = MutableStateFlow(true)
     val hostUseNotificationHook = MutableStateFlow(false)
@@ -84,18 +91,20 @@ class PlaybackService : Service() {
     }
 
     private fun initializePlayer() {
-        exoPlayer = ExoPlayer.Builder(this).build().apply {
+        val player = ExoPlayer.Builder(this).build().apply {
             repeatMode = Player.REPEAT_MODE_ALL
             addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(state: Int) {
                     if (!hostUseNotificationHook.value) {
                         broadcastHostStateToClient()
+                        updateForegroundNotification()
                     }
                 }
 
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     if (!hostUseNotificationHook.value) {
                         broadcastHostStateToClient()
+                        updateForegroundNotification()
                     }
                 }
 
@@ -106,9 +115,17 @@ class PlaybackService : Service() {
                 ) {
                     if (!hostUseNotificationHook.value) {
                         broadcastHostStateToClient()
+                        updateForegroundNotification()
                     }
                 }
             })
+        }
+        exoPlayer = player
+
+        try {
+            mediaSession = androidx.media3.session.MediaSession.Builder(this, player).build()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create MediaSession Builder", e)
         }
         
         scanLocalAudioFiles()
@@ -118,7 +135,8 @@ class PlaybackService : Service() {
     private fun setupNotificationListenerHook() {
         MyNotificationListener.onDataChangedListener = {
             if (isHostMode.value && hostUseNotificationHook.value) {
-                broadcastHostStateToClient()
+                broadcastHostStateToClient(includeMetadata = true)
+                updateForegroundNotification()
             }
         }
     }
@@ -256,6 +274,7 @@ class PlaybackService : Service() {
                     exoPlayer?.prepare()
                 }
                 Log.d(TAG, "Scanned and loaded ${songs.size} real tracks from MediaStore")
+                broadcastHostStateToClient(includeMetadata = true)
             }
         }
     }
@@ -273,6 +292,7 @@ class PlaybackService : Service() {
                     _clientSongs.value = remoteSongs
                 }
                 _clientPlaybackState.value = stateUpdate
+                updateForegroundNotification()
             }
         }
 
@@ -280,6 +300,7 @@ class PlaybackService : Service() {
             if (connectionState == BluetoothConnectionState.CONNECTED && isHostMode.value) {
                 broadcastHostStateToClient(includeMetadata = true)
             }
+            updateForegroundNotification()
         }
     }
 
@@ -325,6 +346,16 @@ class PlaybackService : Service() {
                     "NEXT" -> player.seekToNextMediaItem()
                     "PREV" -> player.seekToPreviousMediaItem()
                     "SEEK" -> cmd.seekPosition?.let { player.seekTo(it) }
+                    "TOGGLE_SHUFFLE" -> {
+                        player.shuffleModeEnabled = !player.shuffleModeEnabled
+                    }
+                    "TOGGLE_REPEAT" -> {
+                        player.repeatMode = when (player.repeatMode) {
+                            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                            else -> Player.REPEAT_MODE_OFF
+                        }
+                    }
                     "SKIP_TO_QUEUE_ITEM" -> {
                         cmd.id?.let { targetId ->
                             val matchIdx = _hostSongs.value.indexOfFirst { it.id == targetId }
@@ -375,6 +406,25 @@ class PlaybackService : Service() {
                         else -> "IDLE"
                     }
 
+                    val isShuffle = try {
+                        val method = controller.javaClass.getMethod("getShuffleMode")
+                        val modeValue = method.invoke(controller) as Int
+                        modeValue != 0
+                    } catch (e: Exception) {
+                        false
+                    }
+                    val isRepeat = try {
+                        val method = controller.javaClass.getMethod("getRepeatMode")
+                        val modeValue = method.invoke(controller) as Int
+                        when (modeValue) {
+                            1 -> "ONE"
+                            2 -> "ALL"
+                            else -> "OFF"
+                        }
+                    } catch (e: Exception) {
+                        "OFF"
+                    }
+
                     // Retrieve System queue sequence
                     val queueItems = controller.queue
                     val systemSongs = mutableListOf<Song>()
@@ -402,18 +452,33 @@ class PlaybackService : Service() {
                         )
                     }
 
+                    val artBase64 = getBase64AlbumArt(controller = controller)
+
+                    val exactElapsedTime = playbackState?.let { pb ->
+                        if (pb.state == PlaybackState.STATE_PLAYING && pb.lastPositionUpdateTime > 0) {
+                            val diff = android.os.SystemClock.elapsedRealtime() - pb.lastPositionUpdateTime
+                            val speed = if (pb.playbackSpeed > 0f) pb.playbackSpeed else 1.0f
+                            pb.position + (diff * speed).toLong()
+                        } else {
+                            pb.position
+                        }
+                    } ?: 0L
+
                     BluetoothStateUpdate(
                         status = statusStr,
                         currentIndex = matchedIdx,
-                        elapsedTime = playbackState?.position ?: 0,
+                        elapsedTime = exactElapsedTime,
                         duration = duration,
                         currentTitle = title,
                         currentArtist = artist,
                         currentAlbum = album,
                         currentGenre = genre,
+                        currentAlbumArt = artBase64,
                         songs = if (includeMetadata) systemSongs else null,
                         maxVolume = maxVol,
-                        currentVolume = currentVol
+                        currentVolume = currentVol,
+                        shuffleActive = isShuffle,
+                        repeatActive = isRepeat
                     )
                 } else {
                     BluetoothStateUpdate(
@@ -425,7 +490,9 @@ class PlaybackService : Service() {
                         currentArtist = "Open Poweramp or local media app",
                         songs = emptyList(),
                         maxVolume = maxVol,
-                        currentVolume = currentVol
+                        currentVolume = currentVol,
+                        shuffleActive = false,
+                        repeatActive = "OFF"
                     )
                 }
             } else {
@@ -434,6 +501,15 @@ class PlaybackService : Service() {
                     val statusStr = if (player.isPlaying) "PLAYING" else if (player.playbackState == Player.STATE_BUFFERING) "BUFFERING" else "PAUSED"
                     val idx = player.currentMediaItemIndex
                     val currentSong = _hostSongs.value.getOrNull(idx)
+
+                    val isShuffle = player.shuffleModeEnabled
+                    val isRepeat = when (player.repeatMode) {
+                        Player.REPEAT_MODE_ONE -> "ONE"
+                        Player.REPEAT_MODE_ALL -> "ALL"
+                        else -> "OFF"
+                    }
+
+                    val artBase64 = currentSong?.let { getBase64AlbumArt(song = it) }
 
                     BluetoothStateUpdate(
                         status = statusStr,
@@ -444,10 +520,12 @@ class PlaybackService : Service() {
                         currentArtist = currentSong?.artist,
                         currentAlbum = currentSong?.album,
                         currentGenre = currentSong?.genre,
-                        currentAlbumArt = currentSong?.albumArtUri,
+                        currentAlbumArt = artBase64,
                         songs = if (includeMetadata) _hostSongs.value else null,
                         maxVolume = maxVol,
-                        currentVolume = currentVol
+                        currentVolume = currentVol,
+                        shuffleActive = isShuffle,
+                        repeatActive = isRepeat
                     )
                 } else {
                     BluetoothStateUpdate(
@@ -456,12 +534,61 @@ class PlaybackService : Service() {
                         elapsedTime = 0,
                         duration = 0,
                         maxVolume = maxVol,
-                        currentVolume = currentVol
+                        currentVolume = currentVol,
+                        shuffleActive = false,
+                        repeatActive = "OFF"
                     )
                 }
             }
 
             bluetoothEngine.sendStateUpdate(update)
+        }
+    }
+
+    private fun getBase64AlbumArt(controller: MediaController? = null, song: Song? = null): String? {
+        if (controller != null) {
+            val metadata = controller.metadata
+            val bitmap = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
+                ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+            if (bitmap != null) {
+                return compressBitmapToBase64(bitmap)
+            }
+        } else if (song != null) {
+            val bitmap = getLocalAlbumArtBitmap(applicationContext, song.albumArtUri)
+            if (bitmap != null) {
+                return compressBitmapToBase64(bitmap)
+            }
+        }
+        return null
+    }
+
+    private fun getLocalAlbumArtBitmap(context: Context, uriStr: String?): android.graphics.Bitmap? {
+        if (uriStr == null) return null
+        return try {
+            val uri = Uri.parse(uriStr)
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                android.graphics.BitmapFactory.decodeStream(inputStream)
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun compressBitmapToBase64(bitmap: android.graphics.Bitmap): String? {
+        return try {
+            val outputStream = java.io.ByteArrayOutputStream()
+            val scaled = if (bitmap.width > 160 || bitmap.height > 160) {
+                android.graphics.Bitmap.createScaledBitmap(bitmap, 160, 160, true)
+            } else {
+                bitmap
+            }
+            scaled.compress(android.graphics.Bitmap.CompressFormat.JPEG, 60, outputStream)
+            val bytes = outputStream.toByteArray()
+            val base64Encoded = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+            "data:image/jpeg;base64,$base64Encoded"
+        } catch (e: Exception) {
+            Log.e(TAG, "Fail compress bitmap to base64", e)
+            null
         }
     }
 
@@ -478,32 +605,179 @@ class PlaybackService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d(TAG, "onStartCommand running")
+        Log.d(TAG, "onStartCommand running with action: ${intent?.action}")
+        when (intent?.action) {
+            ACTION_PLAY_PAUSE -> triggerPlayPause()
+            ACTION_NEXT -> triggerNext()
+            ACTION_PREV -> triggerPrev()
+        }
         updateForegroundNotification()
         return START_STICKY
     }
 
+    fun triggerPlayPause() {
+        scope.launch(Dispatchers.Main) {
+            if (isHostMode.value) {
+                if (hostUseNotificationHook.value) {
+                    MyNotificationListener.executeCommand("TOGGLE_PLAY")
+                } else {
+                    val player = exoPlayer ?: return@launch
+                    if (player.isPlaying) player.pause() else player.play()
+                    broadcastHostStateToClient()
+                }
+            } else {
+                val currentStatus = _clientPlaybackState.value?.status ?: "PAUSED"
+                val cmdStr = if (currentStatus == "PLAYING") "PAUSE" else "RESUME"
+                bluetoothEngine.sendCommand(BluetoothCommand(cmdStr))
+            }
+            updateForegroundNotification()
+        }
+    }
+
+    fun triggerNext() {
+        scope.launch(Dispatchers.Main) {
+            if (isHostMode.value) {
+                if (hostUseNotificationHook.value) {
+                    MyNotificationListener.executeCommand("NEXT")
+                } else {
+                    exoPlayer?.seekToNextMediaItem()
+                    broadcastHostStateToClient()
+                }
+            } else {
+                bluetoothEngine.sendCommand(BluetoothCommand("NEXT"))
+            }
+            updateForegroundNotification()
+        }
+    }
+
+    fun triggerPrev() {
+        scope.launch(Dispatchers.Main) {
+            if (isHostMode.value) {
+                if (hostUseNotificationHook.value) {
+                    MyNotificationListener.executeCommand("PREV")
+                } else {
+                    exoPlayer?.seekToPreviousMediaItem()
+                    broadcastHostStateToClient()
+                }
+            } else {
+                bluetoothEngine.sendCommand(BluetoothCommand("PREV"))
+            }
+            updateForegroundNotification()
+        }
+    }
+
+    data class SimpleTrackInfo(
+        val title: String,
+        val artist: String,
+        val isPlaying: Boolean,
+        val albumArt: android.graphics.Bitmap? = null
+    )
+
+    fun getCurrentTrackInfo(): SimpleTrackInfo {
+        if (isHostMode.value) {
+            if (hostUseNotificationHook.value) {
+                val controller = MyNotificationListener.getActiveController()
+                val metadata = controller?.metadata
+                val title = metadata?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: "No Intercept Sync"
+                val artist = metadata?.getString(MediaMetadata.METADATA_KEY_ARTIST) ?: "Poweramp Native Hook"
+                val rawState = controller?.playbackState?.state ?: PlaybackState.STATE_NONE
+                val isPlaying = rawState == PlaybackState.STATE_PLAYING
+                
+                val bitmap = metadata?.getBitmap(MediaMetadata.METADATA_KEY_ART)
+                    ?: metadata?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+                return SimpleTrackInfo(title, artist, isPlaying, bitmap)
+            } else {
+                val player = exoPlayer
+                val idx = player?.currentMediaItemIndex ?: -1
+                val song = _hostSongs.value.getOrNull(idx)
+                val title = song?.title ?: "Ready to Stream"
+                val artist = song?.artist ?: "Offline Host"
+                val isPlaying = player?.isPlaying ?: false
+                
+                val bitmap = if (song != null) getLocalAlbumArtBitmap(applicationContext, song.albumArtUri) else null
+                return SimpleTrackInfo(title, artist, isPlaying, bitmap)
+            }
+        } else {
+            val state = _clientPlaybackState.value
+            val title = state?.currentTitle ?: "Bridge Idle"
+            val artist = state?.currentArtist ?: "Select Host Source"
+            val isPlaying = state?.status == "PLAYING"
+            
+            val bitmap = state?.currentAlbumArt?.let { base64 ->
+                if (base64.startsWith("data:image")) {
+                    try {
+                        val clean = base64.substringAfter("base64,")
+                        val bytes = android.util.Base64.decode(clean, android.util.Base64.DEFAULT)
+                        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                    } catch (e: Exception) {
+                        null
+                    }
+                } else null
+            }
+            return SimpleTrackInfo(title, artist, isPlaying, bitmap)
+        }
+    }
+
     private fun updateForegroundNotification() {
+        val trackInfo = getCurrentTrackInfo()
+
         val modeText = if (isHostMode.value) {
-            if (hostUseNotificationHook.value) "Host: Hooking Poweramp player" else "Host: Native Media3 Audio"
+            if (hostUseNotificationHook.value) "Host Mode (Hooked)" else "Host Mode (Native)"
         } else {
-            "Client Controller Mode"
+            "Client Mode (Remote)"
         }
 
-        val detailsText = if (isHostMode.value) {
-            "Listening for Client RFCOMM connections and control commands"
+        val flag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
         } else {
-            "Synchronizing playheads, genres, & high-fidelity gestures"
+            android.app.PendingIntent.FLAG_UPDATE_CURRENT
         }
 
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("BlueSync Active Remote Bridge")
-            .setContentText("$modeText - $detailsText")
+        val prevIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_PREV }
+        val prevPending = android.app.PendingIntent.getService(this, 1, prevIntent, flag)
+
+        val playIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_PLAY_PAUSE }
+        val playPending = android.app.PendingIntent.getService(this, 2, playIntent, flag)
+
+        val nextIntent = Intent(this, PlaybackService::class.java).apply { action = ACTION_NEXT }
+        val nextPending = android.app.PendingIntent.getService(this, 3, nextIntent, flag)
+
+        val openAppIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val openAppPending = if (openAppIntent != null) {
+            android.app.PendingIntent.getActivity(this, 0, openAppIntent, flag)
+        } else null
+
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(trackInfo.title)
+            .setContentText(trackInfo.artist)
+            .setSubText(modeText)
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+            .setContentIntent(openAppPending)
+            .addAction(android.R.drawable.ic_media_previous, "Previous", prevPending)
+            .addAction(
+                if (trackInfo.isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                if (trackInfo.isPlaying) "Pause" else "Play",
+                playPending
+            )
+            .addAction(android.R.drawable.ic_media_next, "Next", nextPending)
+
+        if (trackInfo.albumArt != null) {
+            builder.setLargeIcon(trackInfo.albumArt)
+        }
+
+        val session = mediaSession
+        if (session != null) {
+            val mediaStyle = androidx.media3.session.MediaStyleNotificationHelper.MediaStyle(session)
+                .setShowActionsInCompactView(0, 1, 2)
+            builder.setStyle(mediaStyle)
+        }
+
+        val notification = builder.build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
@@ -531,6 +805,13 @@ class PlaybackService : Service() {
         Log.d(TAG, "Service Destroyed")
         broadcastLoopJob?.cancel()
         serviceJob.cancel()
+        
+        try {
+            mediaSession?.release()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed release MediaSession", e)
+        }
+        mediaSession = null
         
         exoPlayer?.release()
         exoPlayer = null

@@ -9,6 +9,7 @@ import com.example.PlaybackService
 import com.example.bluetooth.BluetoothConnectionState
 import com.example.model.BluetoothCommand
 import com.example.model.Song
+import androidx.media3.common.Player
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -39,22 +40,41 @@ class MainViewModel : ViewModel() {
 
     init {
         viewModelScope.launch {
+            var lastClientState: com.example.model.BluetoothStateUpdate? = null
+            var lastClientStateReceivedTime = 0L
+
             while (true) {
                 val activeService = _service.value
                 if (activeService != null) {
                     if (activeService.isHostMode.value) {
                         if (activeService.hostUseNotificationHook.value) {
                             val controller = MyNotificationListener.getActiveController()
-                            _currentPlaybackPosition.value = controller?.playbackState?.position ?: 0L
+                            val pb = controller?.playbackState
+                            if (pb != null) {
+                                if (pb.state == android.media.session.PlaybackState.STATE_PLAYING && pb.lastPositionUpdateTime > 0) {
+                                    val diff = android.os.SystemClock.elapsedRealtime() - pb.lastPositionUpdateTime
+                                    val speed = if (pb.playbackSpeed > 0f) pb.playbackSpeed else 1.0f
+                                    _currentPlaybackPosition.value = pb.position + (diff * speed).toLong()
+                                } else {
+                                    _currentPlaybackPosition.value = pb.position
+                                }
+                            } else {
+                                _currentPlaybackPosition.value = 0L
+                            }
                         } else {
                             _currentPlaybackPosition.value = activeService.exoPlayer?.currentPosition ?: 0L
                         }
                     } else {
                         val clientState = activeService.clientPlaybackState.value
                         if (clientState != null) {
+                            if (clientState != lastClientState) {
+                                lastClientState = clientState
+                                lastClientStateReceivedTime = android.os.SystemClock.elapsedRealtime()
+                            }
                             if (clientState.status == "PLAYING") {
-                                val nextPos = _currentPlaybackPosition.value + 250
-                                _currentPlaybackPosition.value = if (nextPos > clientState.duration) clientState.duration else nextPos
+                                val diff = android.os.SystemClock.elapsedRealtime() - lastClientStateReceivedTime
+                                val estPos = clientState.elapsedTime + diff
+                                _currentPlaybackPosition.value = if (estPos > clientState.duration) clientState.duration else estPos
                             } else {
                                 _currentPlaybackPosition.value = clientState.elapsedTime
                             }
@@ -63,7 +83,7 @@ class MainViewModel : ViewModel() {
                         }
                     }
                 }
-                delay(250)
+                delay(100)
             }
         }
 
@@ -222,6 +242,40 @@ class MainViewModel : ViewModel() {
             }
         } else {
             s.bluetoothEngine.sendCommand(BluetoothCommand("SET_VOLUME", volume = volumeIndex))
+        }
+    }
+
+    fun toggleShuffle() {
+        val s = _service.value ?: return
+        if (s.isHostMode.value) {
+            if (s.hostUseNotificationHook.value) {
+                MyNotificationListener.executeCommand("TOGGLE_SHUFFLE")
+            } else {
+                val player = s.exoPlayer ?: return
+                player.shuffleModeEnabled = !player.shuffleModeEnabled
+                s.broadcastHostStateToClient()
+            }
+        } else {
+            s.bluetoothEngine.sendCommand(BluetoothCommand("TOGGLE_SHUFFLE"))
+        }
+    }
+
+    fun toggleRepeat() {
+        val s = _service.value ?: return
+        if (s.isHostMode.value) {
+            if (s.hostUseNotificationHook.value) {
+                MyNotificationListener.executeCommand("TOGGLE_REPEAT")
+            } else {
+                val player = s.exoPlayer ?: return
+                player.repeatMode = when (player.repeatMode) {
+                    Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                    Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                    else -> Player.REPEAT_MODE_OFF
+                }
+                s.broadcastHostStateToClient()
+            }
+        } else {
+            s.bluetoothEngine.sendCommand(BluetoothCommand("TOGGLE_REPEAT"))
         }
     }
 }

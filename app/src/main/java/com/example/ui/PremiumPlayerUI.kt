@@ -170,11 +170,69 @@ fun PremiumPlayerUI(
         clientState?.currentGenre ?: "Ambient"
     }
 
-    val currentTrackArtUri = if (isHostMode) {
-        val idx = service?.exoPlayer?.currentMediaItemIndex ?: -1
-        localSongs.getOrNull(idx)?.albumArtUri
+    val currentTrackArtUri: Any? = if (isHostMode) {
+        if (hostUseNotificationHook) {
+            val controller = MyNotificationListener.getActiveController()
+            val metadata = controller?.metadata
+            val bitmap = metadata?.getBitmap(android.media.MediaMetadata.METADATA_KEY_ART)
+                ?: metadata?.getBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART)
+            bitmap
+        } else {
+            val idx = service?.exoPlayer?.currentMediaItemIndex ?: -1
+            localSongs.getOrNull(idx)?.albumArtUri
+        }
     } else {
         clientState?.currentAlbumArt
+    }
+
+    val isShuffleActive = if (isHostMode) {
+        if (hostUseNotificationHook) {
+            val controller = MyNotificationListener.getActiveController()
+            if (controller != null) {
+                try {
+                    val method = controller.javaClass.getMethod("getShuffleMode")
+                    val modeValue = method.invoke(controller) as Int
+                    modeValue != 0
+                } catch (e: Exception) {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            service?.exoPlayer?.shuffleModeEnabled ?: false
+        }
+    } else {
+        clientState?.shuffleActive ?: false
+    }
+
+    val repeatStateString = if (isHostMode) {
+        if (hostUseNotificationHook) {
+            val controller = MyNotificationListener.getActiveController()
+            if (controller != null) {
+                try {
+                    val method = controller.javaClass.getMethod("getRepeatMode")
+                    val modeValue = method.invoke(controller) as Int
+                    when (modeValue) {
+                        1 -> "ONE"
+                        2 -> "ALL"
+                        else -> "OFF"
+                    }
+                } catch (e: Exception) {
+                    "OFF"
+                }
+            } else {
+                "OFF"
+            }
+        } else {
+            when (service?.exoPlayer?.repeatMode) {
+                androidx.media3.common.Player.REPEAT_MODE_ONE -> "ONE"
+                androidx.media3.common.Player.REPEAT_MODE_ALL -> "ALL"
+                else -> "OFF"
+            }
+        }
+    } else {
+        clientState?.repeatActive ?: "OFF"
     }
 
     val totalDuration = if (isHostMode) {
@@ -458,31 +516,31 @@ fun PremiumPlayerUI(
                     // Album art cover slot (Fully supports MediaStore and missing states gracefully)
                     Box(
                         modifier = Modifier
-                            .size(160.dp)
+                            .size(125.dp)
                             .clip(RoundedCornerShape(16.dp))
                             .background(Color.White.copy(alpha = 0.05f))
                             .border(1.dp, GlassBorder, RoundedCornerShape(16.dp)),
                         contentAlignment = Alignment.Center
                     ) {
                         if (currentTrackArtUri != null) {
-                            AsyncImage(
-                                model = Uri.parse(currentTrackArtUri),
-                                contentDescription = "Intercepted album art",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier.fillMaxSize()
-                            )
+                             AsyncImage(
+                                 model = currentTrackArtUri,
+                                 contentDescription = "Intercepted album art",
+                                 contentScale = ContentScale.Crop,
+                                 modifier = Modifier.fillMaxSize()
+                             )
                         } else {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Icon(
                                     imageVector = if (hostUseNotificationHook) Icons.Rounded.WifiTethering else Icons.Rounded.Headphones,
                                     contentDescription = "Fallback album art icon",
                                     tint = if (isHostMode) CyanGlow else RosePulse,
-                                    modifier = Modifier.size(48.dp)
+                                    modifier = Modifier.size(40.dp)
                                 )
-                                Spacer(modifier = Modifier.height(8.dp))
+                                Spacer(modifier = Modifier.height(6.dp))
                                 Text(
                                     text = currentTrackGenre,
-                                    fontSize = 11.sp,
+                                    fontSize = 10.sp,
                                     fontWeight = FontWeight.Bold,
                                     color = Color.LightGray.copy(alpha = 0.5f)
                                 )
@@ -532,7 +590,7 @@ fun PremiumPlayerUI(
                         val activeSliderValue = localDragFraction ?: rawSliderVal
 
                         Slider(
-                            value = activeSliderValue,
+                            value = activeSliderValue.coerceIn(0f, 1f),
                             onValueChange = { fraction ->
                                 localDragFraction = fraction
                                 // Drag actions trigger micro-haptic ticks!
@@ -575,12 +633,35 @@ fun PremiumPlayerUI(
                         }
                     }
 
-                    // Bottom Player gestures row (Next, pause/play, Prev)
+                    // Master Control Row with Shuffle, Prev, Play/Pause, Next, and Repeat!
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // Shuffle Button
+                        IconButton(
+                            onClick = {
+                                hapticDriver.triggerClick()
+                                viewModel.toggleShuffle()
+                            },
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Rounded.Shuffle,
+                                contentDescription = "Toggle shuffle",
+                                tint = if (isShuffleActive) {
+                                    if (isHostMode) CyanGlow else RosePulse
+                                } else {
+                                    Color.Gray
+                                },
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+
+                        // Skip Previous
                         IconButton(
                             onClick = {
                                 hapticDriver.triggerSkipPulse()
@@ -596,8 +677,7 @@ fun PremiumPlayerUI(
                             )
                         }
 
-                        Spacer(modifier = Modifier.width(24.dp))
-
+                        // Play/Pause FAB
                         FloatingActionButton(
                             onClick = {
                                 hapticDriver.triggerClick()
@@ -605,18 +685,17 @@ fun PremiumPlayerUI(
                             },
                             containerColor = if (isHostMode) CyanGlow else RosePulse,
                             shape = CircleShape,
-                            modifier = Modifier.size(60.dp)
+                            modifier = Modifier.size(54.dp)
                         ) {
                             Icon(
                                 imageVector = if (isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
                                 contentDescription = "Play toggle pause button",
                                 tint = if (isHostMode) Color.Black else PureWhite,
-                                modifier = Modifier.size(32.dp)
+                                modifier = Modifier.size(28.dp)
                             )
                         }
 
-                        Spacer(modifier = Modifier.width(24.dp))
-
+                        // Skip Next
                         IconButton(
                             onClick = {
                                 hapticDriver.triggerSkipPulse()
@@ -629,6 +708,26 @@ fun PremiumPlayerUI(
                                 contentDescription = "Skip next button",
                                 tint = PureWhite,
                                 modifier = Modifier.size(28.dp)
+                            )
+                        }
+
+                        // Repeat/Replay Button
+                        IconButton(
+                            onClick = {
+                                hapticDriver.triggerClick()
+                                viewModel.toggleRepeat()
+                            },
+                            modifier = Modifier.size(40.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (repeatStateString == "ONE") Icons.Rounded.RepeatOne else Icons.Rounded.Repeat,
+                                contentDescription = "Toggle repeat",
+                                tint = if (repeatStateString != "OFF") {
+                                    if (isHostMode) CyanGlow else RosePulse
+                                } else {
+                                    Color.Gray
+                                },
+                                modifier = Modifier.size(20.dp)
                             )
                         }
                     }
@@ -693,11 +792,33 @@ fun PremiumPlayerUI(
                 modifier = Modifier.padding(horizontal = 18.dp, vertical = 6.dp)
             )
 
+            val systemSongs = remember(currentTrackTitle) {
+                val controller = MyNotificationListener.getActiveController()
+                val queueItems = controller?.queue
+                val list = mutableListOf<Song>()
+                queueItems?.forEach { qItem ->
+                    val itemTitle = qItem.description.title?.toString() ?: "Queue Track"
+                    val itemArtist = qItem.description.subtitle?.toString() ?: "Unknown Artist"
+                    val itemIdStr = qItem.queueId.toString()
+                    list.add(
+                        Song(
+                            id = itemIdStr,
+                            title = itemTitle,
+                            artist = itemArtist,
+                            album = "",
+                            genre = "Streamed",
+                            duration = 0L,
+                            uriString = ""
+                        )
+                    )
+                }
+                list
+            }
+
             // Dynamic Song sequence drawer column list
             val displaySongs = if (isHostMode) {
                 if (hostUseNotificationHook) {
-                    // System list
-                    emptyList() // Render system info notice
+                    systemSongs
                 } else {
                     localSongs
                 }
@@ -714,13 +835,13 @@ fun PremiumPlayerUI(
                     .background(Color.White.copy(alpha = 0.03f))
                     .border(1.dp, GlassBorder, RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp))
             ) {
-                if (isHostMode && hostUseNotificationHook) {
+                val auth = checkNotificationFilterAuth(context)
+                if (isHostMode && hostUseNotificationHook && (!auth || displaySongs.isEmpty())) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.padding(24.dp)
                         ) {
-                            val auth = checkNotificationFilterAuth(context)
                             Icon(
                                 imageVector = if (auth) Icons.Rounded.CheckCircle else Icons.Rounded.LockOpen,
                                 tint = if (auth) CyanGlow else Color.Gray,
@@ -754,6 +875,14 @@ fun PremiumPlayerUI(
                                 ) {
                                     Text("Grant Hook Access", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 11.sp)
                                 }
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    text = "🔒 Security Note: The standard system alert is shown for all active listeners. BlueSync only intercepts music player details (cannot read/write messages or personal files) and is entirely safe to allow.",
+                                    fontSize = 11.sp,
+                                    color = Color.LightGray.copy(alpha = 0.5f),
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(horizontal = 14.dp)
+                                )
                             }
                         }
                     }
