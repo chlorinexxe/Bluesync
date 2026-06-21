@@ -101,6 +101,7 @@ fun PremiumPlayerUI(
     val connectedDevice = service?.bluetoothEngine?.connectedDeviceName?.collectAsState()?.value
 
     // Playback info
+    val currentTrackIndex by (service?.currentTrackIndex ?: MutableStateFlow(0)).collectAsState()
     val localSongs by (service?.hostSongs ?: MutableStateFlow(emptyList())).collectAsState()
     val hostNotificationSongs by (service?.hostNotificationSongs ?: MutableStateFlow(emptyList())).collectAsState()
     val clientSongs by (service?.clientSongs ?: MutableStateFlow(emptyList())).collectAsState()
@@ -143,7 +144,7 @@ fun PremiumPlayerUI(
             val controller = MyNotificationListener.getActiveController()
             controller?.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_TITLE) ?: "No Intercept Sync"
         } else {
-            val idx = service?.exoPlayer?.currentMediaItemIndex ?: -1
+            val idx = currentTrackIndex
             localSongs.getOrNull(idx)?.title ?: "Ready to Stream"
         }
     } else {
@@ -155,7 +156,7 @@ fun PremiumPlayerUI(
             val controller = MyNotificationListener.getActiveController()
             controller?.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST) ?: "Poweramp Native Hook"
         } else {
-            val idx = service?.exoPlayer?.currentMediaItemIndex ?: -1
+            val idx = currentTrackIndex
             localSongs.getOrNull(idx)?.artist ?: "Offline Host"
         }
     } else {
@@ -167,7 +168,7 @@ fun PremiumPlayerUI(
             val controller = MyNotificationListener.getActiveController()
             controller?.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_ALBUM) ?: ""
         } else {
-            val idx = service?.exoPlayer?.currentMediaItemIndex ?: -1
+            val idx = currentTrackIndex
             localSongs.getOrNull(idx)?.album ?: "Unknown Album"
         }
     } else {
@@ -179,7 +180,7 @@ fun PremiumPlayerUI(
             val controller = MyNotificationListener.getActiveController()
             controller?.metadata?.getString(android.media.MediaMetadata.METADATA_KEY_GENRE) ?: "Various"
         } else {
-            val idx = service?.exoPlayer?.currentMediaItemIndex ?: -1
+            val idx = currentTrackIndex
             localSongs.getOrNull(idx)?.genre ?: "Industrial"
         }
     } else {
@@ -194,7 +195,7 @@ fun PremiumPlayerUI(
                 ?: metadata?.getBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART)
             bitmap
         } else {
-            val idx = service?.exoPlayer?.currentMediaItemIndex ?: -1
+            val idx = currentTrackIndex
             localSongs.getOrNull(idx)?.albumArtUri
         }
     } else {
@@ -354,6 +355,7 @@ fun PremiumPlayerUI(
                 hostUseNotificationHook = hostUseNotificationHook,
                 bluetoothState = bluetoothState,
                 connectedDevice = connectedDevice,
+                currentTrackIndex = currentTrackIndex,
                 currentTrackTitle = currentTrackTitle,
                 currentTrackArtist = currentTrackArtist,
                 currentTrackArtUri = currentTrackArtUri,
@@ -997,7 +999,7 @@ fun PremiumPlayerUI(
                         ) {
                             itemsIndexed(displaySongs) { idx, song ->
                                 val activeMatch = if (isHostMode) {
-                                    val currentIdx = service?.exoPlayer?.currentMediaItemIndex ?: -1
+                                    val currentIdx = currentTrackIndex
                                     currentIdx == idx
                                 } else {
                                     clientState?.currentIndex == idx
@@ -1021,13 +1023,18 @@ fun PremiumPlayerUI(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clip(RoundedCornerShape(12.dp))
+                                        .clip(RoundedCornerShape(14.dp))
                                         .background(if (activeMatch) Color.White.copy(alpha = 0.08f) else Color.Transparent)
+                                        .border(
+                                            width = 1.dp,
+                                            color = if (activeMatch) (if (isHostMode) CyanGlow.copy(alpha = 0.25f) else RosePulse.copy(alpha = 0.25f)) else Color.Transparent,
+                                            shape = RoundedCornerShape(14.dp)
+                                        )
                                         .clickable {
                                             hapticDriver.triggerClick()
                                             viewModel.playSongWithId(song.id, idx)
                                         }
-                                        .padding(12.dp),
+                                        .padding(horizontal = 14.dp, vertical = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
@@ -1068,14 +1075,17 @@ fun PremiumPlayerUI(
 
                                         Spacer(modifier = Modifier.width(12.dp))
 
-                                        Column {
+                                        Column(
+                                            modifier = Modifier.weight(1f)
+                                        ) {
                                             Text(
                                                 text = song.title,
                                                 color = if (activeMatch) PureWhite else Color.LightGray,
                                                 fontWeight = FontWeight.SemiBold,
                                                 fontSize = 13.sp,
                                                 maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
+                                                overflow = TextOverflow.Ellipsis,
+                                                softWrap = false
                                             )
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Text(
@@ -1084,6 +1094,7 @@ fun PremiumPlayerUI(
                                                     fontSize = 11.sp,
                                                     maxLines = 1,
                                                     overflow = TextOverflow.Ellipsis,
+                                                    softWrap = false,
                                                     modifier = Modifier.weight(1f, fill = false)
                                                 )
                                                 if (song.genre.isNotEmpty()) {
@@ -1092,17 +1103,24 @@ fun PremiumPlayerUI(
                                                         text = "• ${song.genre}",
                                                         color = (if (isHostMode) CyanGlow else RosePulse).copy(alpha = 0.5f),
                                                         fontSize = 9.sp,
-                                                        fontWeight = FontWeight.Bold
+                                                        fontWeight = FontWeight.Bold,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        softWrap = false
                                                     )
                                                 }
                                             }
                                         }
                                     }
 
+                                    Spacer(modifier = Modifier.width(8.dp))
+
                                     Text(
                                         text = formatDuration(song.duration),
                                         color = Color.Gray,
-                                        fontSize = 11.sp
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        softWrap = false
                                     )
                                 }
                             }
@@ -1395,29 +1413,41 @@ fun DeviceRowItem(
             .fillMaxWidth()
             .clip(RoundedCornerShape(12.dp))
             .background(Color.White.copy(alpha = 0.04f))
+            .border(1.dp, Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
             .clickable { onClick() }
             .padding(14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Icon(Icons.Rounded.Smartphone, contentDescription = "Device icon", tint = Color.LightGray)
             Spacer(modifier = Modifier.width(12.dp))
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = device.name ?: "Unnamed Device",
                     color = PureWhite,
                     fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    softWrap = false
                 )
                 Text(
                     text = device.address,
                     color = Color.LightGray.copy(alpha = 0.4f),
                     fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    softWrap = false
                 )
             }
         }
+
+        Spacer(modifier = Modifier.width(8.dp))
 
         Icon(Icons.Rounded.ChevronRight, contentDescription = "Connect arrow", tint = Color.Gray)
     }
@@ -1568,6 +1598,7 @@ fun LandscapePlayerLayout(
     hostUseNotificationHook: Boolean,
     bluetoothState: BluetoothConnectionState,
     connectedDevice: String?,
+    currentTrackIndex: Int,
     currentTrackTitle: String,
     currentTrackArtist: String,
     currentTrackArtUri: Any?,
@@ -2034,7 +2065,7 @@ fun LandscapePlayerLayout(
                     ) {
                         itemsIndexed(displaySongs) { idx, song ->
                             val activeMatch = if (isHostMode) {
-                                val currentIdx = (viewModel.service.value)?.exoPlayer?.currentMediaItemIndex ?: -1
+                                val currentIdx = currentTrackIndex
                                 currentIdx == idx
                             } else {
                                 viewModel.service.value?.clientPlaybackState?.value?.currentIndex == idx

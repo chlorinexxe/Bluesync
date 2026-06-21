@@ -72,6 +72,17 @@ class PlaybackService : Service() {
     private val _clientPlaybackState = MutableStateFlow<BluetoothStateUpdate?>(null)
     val clientPlaybackState = _clientPlaybackState.asStateFlow()
 
+    private val _currentTrackIndex = MutableStateFlow(0)
+    val currentTrackIndex = _currentTrackIndex.asStateFlow()
+
+    // High-performance caching layers for fast serialization
+    private var lastServedSongId: String? = null
+    private var cachedMainAlbumArt: String? = null
+    private val cachedSmallAlbumArt = mutableMapOf<String, String>()
+
+    private var lastServedHookKey: String? = null
+    private var cachedHookAlbumArt: String? = null
+
     private var broadcastLoopJob: Job? = null
 
     inner class LocalBinder : Binder() {
@@ -99,14 +110,16 @@ class PlaybackService : Service() {
             addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(state: Int) {
                     if (!hostUseNotificationHook.value) {
-                        broadcastHostStateToClient()
+                        _currentTrackIndex.value = currentMediaItemIndex
+                        broadcastHostStateToClient(includeMetadata = true)
                         updateForegroundNotification()
                     }
                 }
 
                 override fun onIsPlayingChanged(isPlaying: Boolean) {
                     if (!hostUseNotificationHook.value) {
-                        broadcastHostStateToClient()
+                        _currentTrackIndex.value = currentMediaItemIndex
+                        broadcastHostStateToClient(includeMetadata = true)
                         updateForegroundNotification()
                     }
                 }
@@ -117,8 +130,27 @@ class PlaybackService : Service() {
                     reason: Int
                 ) {
                     if (!hostUseNotificationHook.value) {
-                        broadcastHostStateToClient()
+                        _currentTrackIndex.value = currentMediaItemIndex
+                        broadcastHostStateToClient(includeMetadata = true)
                         updateForegroundNotification()
+                    }
+                }
+
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    if (!hostUseNotificationHook.value) {
+                        _currentTrackIndex.value = currentMediaItemIndex
+                        broadcastHostStateToClient(includeMetadata = true)
+                        updateForegroundNotification()
+                    }
+                }
+
+                override fun onEvents(player: Player, events: Player.Events) {
+                    if (!hostUseNotificationHook.value) {
+                        _currentTrackIndex.value = player.currentMediaItemIndex
+                        if (events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_PLAYBACK_STATE_CHANGED, Player.EVENT_IS_PLAYING_CHANGED, Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED, Player.EVENT_REPEAT_MODE_CHANGED)) {
+                            broadcastHostStateToClient(includeMetadata = true)
+                            updateForegroundNotification()
+                        }
                     }
                 }
             })
@@ -272,7 +304,20 @@ class PlaybackService : Service() {
                 if (!hostUseNotificationHook.value) {
                     exoPlayer?.clearMediaItems()
                     songs.forEach { song ->
-                        exoPlayer?.addMediaItem(MediaItem.fromUri(song.uriString))
+                        val mediaMetadata = androidx.media3.common.MediaMetadata.Builder()
+                            .setTitle(song.title)
+                            .setArtist(song.artist)
+                            .setAlbumTitle(song.album)
+                            .setArtworkUri(if (song.albumArtUri != null) Uri.parse(song.albumArtUri) else null)
+                            .build()
+
+                        val mediaItem = androidx.media3.common.MediaItem.Builder()
+                            .setUri(song.uriString)
+                            .setMediaId(song.id)
+                            .setMediaMetadata(mediaMetadata)
+                            .build()
+
+                        exoPlayer?.addMediaItem(mediaItem)
                     }
                     exoPlayer?.prepare()
                 }
@@ -294,7 +339,30 @@ class PlaybackService : Service() {
                 stateUpdate.songs?.let { remoteSongs ->
                     _clientSongs.value = remoteSongs
                 }
-                _clientPlaybackState.value = stateUpdate
+                
+                val previousState = _clientPlaybackState.value
+                val mergedState = if (previousState != null) {
+                    BluetoothStateUpdate(
+                        status = stateUpdate.status,
+                        currentIndex = stateUpdate.currentIndex,
+                        elapsedTime = stateUpdate.elapsedTime,
+                        duration = stateUpdate.duration,
+                        currentTitle = stateUpdate.currentTitle ?: previousState.currentTitle,
+                        currentArtist = stateUpdate.currentArtist ?: previousState.currentArtist,
+                        currentAlbum = stateUpdate.currentAlbum ?: previousState.currentAlbum,
+                        currentGenre = stateUpdate.currentGenre ?: previousState.currentGenre,
+                        currentAlbumArt = stateUpdate.currentAlbumArt ?: previousState.currentAlbumArt,
+                        songs = stateUpdate.songs ?: previousState.songs,
+                        maxVolume = stateUpdate.maxVolume ?: previousState.maxVolume,
+                        currentVolume = stateUpdate.currentVolume ?: previousState.currentVolume,
+                        shuffleActive = stateUpdate.shuffleActive ?: previousState.shuffleActive,
+                        repeatActive = stateUpdate.repeatActive ?: previousState.repeatActive
+                    )
+                } else {
+                    stateUpdate
+                }
+                
+                _clientPlaybackState.value = mergedState
                 updateForegroundNotification()
             }
         }
@@ -440,93 +508,108 @@ class PlaybackService : Service() {
                             "OFF"
                         }
 
-                        // Retrieve System queue sequence
-                        val queueItems = controller.queue
-                        var matchedIdx = 0
-                        queueItems?.forEachIndexed { idx, qItem ->
-                            val itemTitle = qItem.description.title?.toString() ?: ""
-                            if (itemTitle == title) {
-                                matchedIdx = idx
-                            }
-                        }
-
-                        // We now take the next 5 items starting after matchedIdx with 40x40 JPEGs
-                        val systemSongs = mutableListOf<Song>()
-                        if (queueItems != null && queueItems.isNotEmpty()) {
-                            val startIndex = (matchedIdx + 1) % queueItems.size
-                            for (i in 0 until 5) {
-                                val qIdx = (startIndex + i) % queueItems.size
-                                val qItem = queueItems[qIdx]
-                                val itemTitle = qItem.description.title?.toString() ?: "Queue Track"
-                                val itemArtist = qItem.description.subtitle?.toString() ?: "Unknown Artist"
-                                val itemIdStr = qItem.queueId.toString()
-
-                                var smallArtBase64: String? = null
-                                val iconBitmap = qItem.description.iconBitmap
-                                if (iconBitmap != null) {
-                                    smallArtBase64 = getSmallBase64AlbumArt(iconBitmap)
+                        // Retrieve System queue sequence only if metadata is requested
+                        val systemSongs = if (includeMetadata) {
+                            val queueItems = controller.queue
+                            var matchedIdx = 0
+                            queueItems?.forEachIndexed { idx, qItem ->
+                                val itemTitle = qItem.description.title?.toString() ?: ""
+                                if (itemTitle == title) {
+                                    matchedIdx = idx
                                 }
-
-                                systemSongs.add(
-                                    Song(
-                                        id = itemIdStr,
-                                        title = itemTitle,
-                                        artist = itemArtist,
-                                        album = "",
-                                        genre = "Streamed",
-                                        duration = 0L,
-                                        uriString = "",
-                                        albumArtUri = smallArtBase64
-                                    )
-                                )
                             }
-                        } else {
-                            // Fallback: Match current intercepted title to local scanned host library
-                            val nativeSongs = _hostSongs.value
-                            if (nativeSongs.isNotEmpty()) {
-                                var matchedNativeIdx = nativeSongs.indexOfFirst {
-                                    it.title.equals(title, ignoreCase = true) || title.contains(it.title, ignoreCase = true) || it.title.contains(title, ignoreCase = true)
-                                }
-                                if (matchedNativeIdx == -1) matchedNativeIdx = 0
 
-                                val startIndex = (matchedNativeIdx + 1) % nativeSongs.size
+                            val songsList = mutableListOf<Song>()
+                            if (queueItems != null && queueItems.isNotEmpty()) {
+                                val startIndex = (matchedIdx + 1) % queueItems.size
                                 for (i in 0 until 5) {
-                                    val nIdx = (startIndex + i) % nativeSongs.size
-                                    val songItem = nativeSongs[nIdx]
+                                    val qIdx = (startIndex + i) % queueItems.size
+                                    val qItem = queueItems[qIdx]
+                                    val itemTitle = qItem.description.title?.toString() ?: "Queue Track"
+                                    val itemArtist = qItem.description.subtitle?.toString() ?: "Unknown Artist"
+                                    val itemIdStr = qItem.queueId.toString()
 
                                     var smallArtBase64: String? = null
-                                    if (songItem.albumArtUri != null) {
-                                        try {
-                                            val bitmap = getLocalAlbumArtBitmap(applicationContext, songItem.albumArtUri)
-                                            if (bitmap != null) {
-                                                smallArtBase64 = getSmallBase64AlbumArt(bitmap)
-                                            }
-                                        } catch (e: Exception) {
-                                            Log.e(TAG, "Fail to get fallback native small art", e)
-                                        }
+                                    val iconBitmap = qItem.description.iconBitmap
+                                    if (iconBitmap != null) {
+                                        smallArtBase64 = getSmallBase64AlbumArt(iconBitmap)
                                     }
 
-                                    systemSongs.add(
+                                    songsList.add(
                                         Song(
-                                            id = songItem.id,
-                                            title = songItem.title,
-                                            artist = songItem.artist,
-                                            album = songItem.album,
-                                            genre = songItem.genre,
-                                            duration = songItem.duration,
+                                            id = itemIdStr,
+                                            title = itemTitle,
+                                            artist = itemArtist,
+                                            album = "",
+                                            genre = "Streamed",
+                                            duration = 0L,
                                             uriString = "",
                                             albumArtUri = smallArtBase64
                                         )
                                     )
                                 }
+                            } else {
+                                val nativeSongs = _hostSongs.value
+                                if (nativeSongs.isNotEmpty()) {
+                                    var matchedNativeIdx = nativeSongs.indexOfFirst {
+                                        it.title.equals(title, ignoreCase = true) || title.contains(it.title, ignoreCase = true) || it.title.contains(title, ignoreCase = true)
+                                    }
+                                    if (matchedNativeIdx == -1) matchedNativeIdx = 0
+
+                                    val startIndex = (matchedNativeIdx + 1) % nativeSongs.size
+                                    for (i in 0 until 5) {
+                                        val nIdx = (startIndex + i) % nativeSongs.size
+                                        val songItem = nativeSongs[nIdx]
+
+                                        var smallArtBase64 = cachedSmallAlbumArt[songItem.id]
+                                        if (smallArtBase64 == null && songItem.albumArtUri != null) {
+                                            try {
+                                                val bitmap = getLocalAlbumArtBitmap(applicationContext, songItem.albumArtUri)
+                                                if (bitmap != null) {
+                                                    smallArtBase64 = getSmallBase64AlbumArt(bitmap)
+                                                    if (!smallArtBase64.isNullOrEmpty()) {
+                                                        cachedSmallAlbumArt[songItem.id] = smallArtBase64
+                                                    }
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.e(TAG, "Fail to get fallback native small art", e)
+                                            }
+                                        }
+
+                                        songsList.add(
+                                            Song(
+                                                id = songItem.id,
+                                                title = songItem.title,
+                                                artist = songItem.artist,
+                                                album = songItem.album,
+                                                genre = songItem.genre,
+                                                duration = songItem.duration,
+                                                uriString = "",
+                                                albumArtUri = smallArtBase64
+                                            )
+                                        )
+                                    }
+                                }
                             }
-                        }
 
-                        withContext(Dispatchers.Main) {
-                            _hostNotificationSongs.value = systemSongs
-                        }
+                            withContext(Dispatchers.Main) {
+                                _hostNotificationSongs.value = songsList
+                            }
+                            songsList
+                        } else null
 
-                        val artBase64 = getBase64AlbumArt(controller = controller)
+                        // Cached hook album art only if includeMetadata is true
+                        val artBase64 = if (includeMetadata) {
+                            val currentHookKey = "${title}_${artist}"
+                            if (currentHookKey == lastServedHookKey && cachedHookAlbumArt != null) {
+                                cachedHookAlbumArt
+                            } else {
+                                val art = getBase64AlbumArt(controller = controller)
+                                lastServedHookKey = currentHookKey
+                                cachedHookAlbumArt = art
+                                art
+                            }
+                        } else null
 
                         val exactElapsedTime = playbackState?.let { pb ->
                             if (pb.state == PlaybackState.STATE_PLAYING && pb.lastPositionUpdateTime > 0) {
@@ -537,6 +620,17 @@ class PlaybackService : Service() {
                                 pb.position
                             }
                         } ?: 0L
+
+                        val queueItems = controller.queue
+                        var matchedIdx = 0
+                        if (queueItems != null && queueItems.isNotEmpty()) {
+                            queueItems.forEachIndexed { idx, qItem ->
+                                val itemTitle = qItem.description.title?.toString() ?: ""
+                                if (itemTitle == title) {
+                                    matchedIdx = idx
+                                }
+                            }
+                        }
 
                         BluetoothStateUpdate(
                             status = statusStr,
@@ -582,43 +676,62 @@ class PlaybackService : Service() {
                             else -> "OFF"
                         }
 
-                        val artBase64 = currentSong?.let { getBase64AlbumArt(song = it) }
-
-                        // Construct next 5 upcoming tracks for client with 40x40 artwork thumbnail base64
-                        val nextSongsToSend = mutableListOf<Song>()
-                        val nativeSongs = _hostSongs.value
-                        if (nativeSongs.isNotEmpty()) {
-                            val startIndex = (idx + 1) % nativeSongs.size
-                            for (i in 0 until 5) {
-                                val nIdx = (startIndex + i) % nativeSongs.size
-                                val songItem = nativeSongs[nIdx]
-
-                                var smallArtBase64: String? = null
-                                if (songItem.albumArtUri != null) {
-                                    try {
-                                        val bitmap = getLocalAlbumArtBitmap(applicationContext, songItem.albumArtUri)
-                                        if (bitmap != null) {
-                                            smallArtBase64 = getSmallBase64AlbumArt(bitmap)
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.e(TAG, "Fail to get native small art", e)
-                                    }
+                        // Cache native main album art only if includeMetadata is true
+                        val artBase64 = if (includeMetadata) {
+                            val currentSongId = currentSong?.id
+                            if (currentSongId != null) {
+                                if (currentSongId == lastServedSongId && cachedMainAlbumArt != null) {
+                                    cachedMainAlbumArt
+                                } else {
+                                    val art = currentSong.let { getBase64AlbumArt(song = it) }
+                                    lastServedSongId = currentSongId
+                                    cachedMainAlbumArt = art
+                                    art
                                 }
+                            } else null
+                        } else null
 
-                                nextSongsToSend.add(
-                                    Song(
-                                        id = songItem.id,
-                                        title = songItem.title,
-                                        artist = songItem.artist,
-                                        album = songItem.album,
-                                        genre = songItem.genre,
-                                        duration = songItem.duration,
-                                        uriString = "",
-                                        albumArtUri = smallArtBase64
+                        // Construct next 5 upcoming tracks for client only if requested
+                        val nextSongsToSend = if (includeMetadata) {
+                            val songsList = mutableListOf<Song>()
+                            val nativeSongs = _hostSongs.value
+                            if (nativeSongs.isNotEmpty()) {
+                                val startIndex = (idx + 1) % nativeSongs.size
+                                for (i in 0 until 5) {
+                                    val nIdx = (startIndex + i) % nativeSongs.size
+                                    val songItem = nativeSongs[nIdx]
+
+                                    var smallArtBase64 = cachedSmallAlbumArt[songItem.id]
+                                    if (smallArtBase64 == null && songItem.albumArtUri != null) {
+                                        try {
+                                            val bitmap = getLocalAlbumArtBitmap(applicationContext, songItem.albumArtUri)
+                                            if (bitmap != null) {
+                                                smallArtBase64 = getSmallBase64AlbumArt(bitmap)
+                                                if (!smallArtBase64.isNullOrEmpty()) {
+                                                    cachedSmallAlbumArt[songItem.id] = smallArtBase64
+                                                }
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.e(TAG, "Fail to get native small art", e)
+                                        }
+                                    }
+
+                                    songsList.add(
+                                        Song(
+                                            id = songItem.id,
+                                            title = songItem.title,
+                                            artist = songItem.artist,
+                                            album = songItem.album,
+                                            genre = songItem.genre,
+                                            duration = songItem.duration,
+                                            uriString = "",
+                                            albumArtUri = smallArtBase64
+                                        )
                                     )
-                                )
+                                }
                             }
-                        }
+                            songsList
+                        } else null
 
                         BluetoothStateUpdate(
                             status = statusStr,
