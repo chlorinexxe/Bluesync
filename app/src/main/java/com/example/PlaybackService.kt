@@ -377,6 +377,13 @@ class PlaybackService : Service() {
 
     private fun handleClientCommand(cmd: BluetoothCommand) {
         scope.launch(Dispatchers.Main) {
+            val cmdTime = cmd.timestamp
+            val age = System.currentTimeMillis() - cmdTime
+            if (age > 3000L) {
+                Log.d(TAG, "Discarding stale Bluetooth command: ${cmd.command} (delayed by ${age}ms during connection stall)")
+                return@launch
+            }
+
             if (cmd.command == "SET_VOLUME") {
                 cmd.volume?.let { volIndex ->
                     try {

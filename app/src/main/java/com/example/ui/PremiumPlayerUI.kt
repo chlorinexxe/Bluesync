@@ -387,7 +387,7 @@ fun PremiumPlayerUI(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "BLUESYNC BRIDGE",
                         fontSize = 18.sp,
@@ -399,15 +399,23 @@ fun PremiumPlayerUI(
                                 offset = Offset(0f, 4f),
                                 blurRadius = 8f
                             )
-                        )
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        softWrap = false
                     )
                     Text(
                         text = if (isHostMode) "Primary Broadcast Terminal" else "Client Remote Interception Hub",
                         fontSize = 11.sp,
                         color = Color.LightGray.copy(alpha = 0.6f),
-                        fontWeight = FontWeight.Medium
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        softWrap = false
                     )
                 }
+
+                Spacer(modifier = Modifier.width(12.dp))
 
                 // Mode Swapping Toggle Slider
                 Row(
@@ -464,7 +472,10 @@ fun PremiumPlayerUI(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         val connectionIcon = when (bluetoothState) {
                             BluetoothConnectionState.DISCONNECTED -> Icons.Rounded.BluetoothDisabled
                             BluetoothConnectionState.CONNECTING -> Icons.Rounded.BluetoothSearching
@@ -491,28 +502,39 @@ fun PremiumPlayerUI(
                             modifier = Modifier.size(22.dp)
                         )
                         Spacer(modifier = Modifier.width(12.dp))
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = connectionMsg,
                                 color = PureWhite,
                                 fontWeight = FontWeight.SemiBold,
-                                fontSize = 13.sp
+                                fontSize = 13.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                softWrap = false
                             )
                             if (bluetoothState == BluetoothConnectionState.CONNECTED && connectedDevice != null) {
                                 Text(
                                     text = "Device: $connectedDevice",
                                     color = Color.LightGray.copy(alpha = 0.5f),
-                                    fontSize = 10.sp
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    softWrap = false
                                 )
                             } else if (bluetoothState == BluetoothConnectionState.LISTENING) {
                                 Text(
                                     text = "RFCOMM Port open - listening",
                                     color = Color.LightGray.copy(alpha = 0.5f),
-                                    fontSize = 10.sp
+                                    fontSize = 10.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    softWrap = false
                                 )
                             }
                         }
                     }
+
+                    Spacer(modifier = Modifier.width(12.dp))
 
                     // Main Action button for connections inside status card
                     if (isHostMode) {
@@ -651,14 +673,18 @@ fun PremiumPlayerUI(
                             text = currentTrackArtist,
                             fontSize = if (isSmallScreen) 11.sp else 13.sp,
                             color = Color.LightGray.copy(alpha = 0.7f),
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            softWrap = false
                         )
                         if (currentTrackAlbum.isNotEmpty() && !isSmallScreen) {
                             Text(
                                 text = "Album: $currentTrackAlbum",
                                 fontSize = 11.sp,
                                 color = Color.LightGray.copy(alpha = 0.4f),
-                                maxLines = 1
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                softWrap = false
                             )
                         }
                     }
@@ -687,7 +713,10 @@ fun PremiumPlayerUI(
                                 fontSize = if (isSmallScreen) 8.sp else 9.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = if (isHostMode) CyanGlow.copy(alpha = 0.8f) else RosePulse.copy(alpha = 0.8f),
-                                letterSpacing = 1.sp
+                                letterSpacing = 1.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                softWrap = false
                             )
                         }
 
@@ -857,7 +886,10 @@ fun PremiumPlayerUI(
                             fontSize = if (isSmallScreen) 8.sp else 9.sp,
                             fontWeight = FontWeight.Bold,
                             color = if (isHostMode) CyanGlow.copy(alpha = 0.8f) else RosePulse.copy(alpha = 0.8f),
-                            letterSpacing = 1.sp
+                            letterSpacing = 1.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            softWrap = false
                         )
                     }
 
@@ -1179,21 +1211,32 @@ fun HostControlsSelectionCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(
+                modifier = Modifier.weight(1f)
+            ) {
                 Text(
                     text = "Broadcast Source",
                     color = PureWhite,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    softWrap = false
                 )
                 Text(
-                    text = if (useNotificationHook) "Hooked into Poweramp (Third Party)" else "Native Local Media3 Player",
+                    text = if (useNotificationHook) "Hooked into Poweramp (Third-Party)" else "Native Local Media3 Player",
                     color = Color.LightGray.copy(alpha = 0.5f),
-                    fontSize = 10.sp
+                    fontSize = 10.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    softWrap = false
                 )
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(start = 8.dp)
+            ) {
                 Text(
                     text = "Local",
                     fontSize = 10.sp,
@@ -1202,7 +1245,9 @@ fun HostControlsSelectionCard(
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .clickable { onToggle(false) }
-                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    maxLines = 1,
+                    softWrap = false
                 )
 
                 Switch(
@@ -1225,7 +1270,9 @@ fun HostControlsSelectionCard(
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .clickable { onToggle(true) }
-                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
         }
@@ -1693,7 +1740,9 @@ fun LandscapePlayerLayout(
                             text = currentTrackArtist,
                             fontSize = 12.sp,
                             color = Color.LightGray.copy(alpha = 0.7f),
-                            maxLines = 1
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            softWrap = false
                         )
                     }
 

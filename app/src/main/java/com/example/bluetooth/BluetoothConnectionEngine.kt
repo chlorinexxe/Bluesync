@@ -76,6 +76,7 @@ class BluetoothConnectionEngine(private val context: Context) {
 
     private var connectionJob: Job? = null
     private var listeningJob: Job? = null
+    private var heartbeatJob: Job? = null
     private var receiverRegistered = false
 
     // Callbacks
@@ -300,14 +301,26 @@ class BluetoothConnectionEngine(private val context: Context) {
 
                 Log.d(TAG, "I/O Readers/Writers initialized, listening for data...")
 
+                if (!isHost) {
+                    heartbeatJob?.cancel()
+                    heartbeatJob = scope.launch(ioDispatcher) {
+                        while (connectionState.value == BluetoothConnectionState.CONNECTED) {
+                            kotlinx.coroutines.delay(1200)
+                            if (connectionState.value == BluetoothConnectionState.CONNECTED) {
+                                sendCommand(BluetoothCommand(command = "PING"))
+                            }
+                        }
+                    }
+                }
+
                 while (connectionState.value == BluetoothConnectionState.CONNECTED) {
                     val line = reader?.readLine() ?: break // socket closed
-                    Log.d(TAG, "Received raw line: $line")
                     
                     if (isHost) {
                         try {
                             val cmd = commandAdapter.fromJson(line)
-                            if (cmd != null) {
+                            if (cmd != null && cmd.command != "PING") {
+                                Log.d(TAG, "Received raw line: $line")
                                 withContext(Dispatchers.Main) {
                                     onCommandReceived?.invoke(cmd)
                                 }
@@ -385,6 +398,7 @@ class BluetoothConnectionEngine(private val context: Context) {
             try {
                 val json = commandAdapter.toJson(command)
                 writer?.println(json)
+                writer?.flush()
                 Log.d(TAG, "Sent command: $json")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send command", e)
@@ -398,7 +412,10 @@ class BluetoothConnectionEngine(private val context: Context) {
             try {
                 val json = updateAdapter.toJson(stateUpdate)
                 writer?.println(json)
-                Log.d(TAG, "Sent state update: $json")
+                writer?.flush()
+                if (stateUpdate.status != "PING") {
+                    Log.d(TAG, "Sent state update: $json")
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to send state update", e)
             }
@@ -424,6 +441,8 @@ class BluetoothConnectionEngine(private val context: Context) {
             userIntentDisconnected = true
             autoReconnectJob?.cancel()
         }
+        heartbeatJob?.cancel()
+        heartbeatJob = null
         stopDeviceDiscovery()
         listeningJob?.cancel()
         listeningJob = null

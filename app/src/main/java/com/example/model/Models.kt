@@ -20,7 +20,8 @@ data class BluetoothCommand(
     val index: Int? = null,
     val id: String? = null,
     val seekPosition: Long? = null,
-    val volume: Int? = null
+    val volume: Int? = null,
+    val timestamp: Long = System.currentTimeMillis()
 )
 
 @JsonClass(generateAdapter = true)
