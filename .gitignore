@@ -16,3 +16,6 @@
 local.properties
 .env
 debug.keystore
+
+# Allow APK files to be tracked in Git
+!*.apk
