@@ -434,8 +434,29 @@ class BluetoothConnectionEngine(private val context: Context) {
                 cleanup(explicit = false)
 
                 if (wasConnected && !userIntentDisconnected) {
-                    triggerAutoReconnectWithDelay()
+                    // The host side of a dropped connection has nothing to "reconnect" to (it
+                    // never dialed out) - it needs to resume *listening* for a new incoming
+                    // connection instead. Using the client-reconnect path here unconditionally
+                    // was a real bug: after any transient Bluetooth hiccup, the host would just
+                    // sit idle at "Not connected" forever, requiring someone to physically tap
+                    // "Start hosting" again on that phone.
+                    if (isHost) {
+                        triggerHostRelistenWithDelay()
+                    } else {
+                        triggerAutoReconnectWithDelay()
+                    }
                 }
+            }
+        }
+    }
+
+    private fun triggerHostRelistenWithDelay() {
+        autoReconnectJob?.cancel()
+        autoReconnectJob = scope.launch {
+            kotlinx.coroutines.delay(1500)
+            if (_connectionState.value == BluetoothConnectionState.DISCONNECTED && !userIntentDisconnected) {
+                Log.d(TAG, "Resuming host listening after dropped connection")
+                startHostServer()
             }
         }
     }

@@ -8,6 +8,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -105,12 +106,13 @@ fun NowPlayingCard(
  * so browsing songs isn't fighting the full card for vertical space - just enough to see
  * what's playing and keep transport control one tap away. */
 @Composable
-fun MiniPlayerBar(state: PlayerUiState, actions: PlayerActions, modifier: Modifier = Modifier) {
+fun MiniPlayerBar(state: PlayerUiState, actions: PlayerActions, onExpand: () -> Unit = {}, modifier: Modifier = Modifier) {
     Row(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(GlassSurface)
+            .clickable(onClick = onExpand)
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

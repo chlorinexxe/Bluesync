@@ -56,5 +56,6 @@ data class PlayerActions(
     val onSelectSong: (Song, Int) -> Unit,
     val onLoadMoreSongs: () -> Unit,
     val onJoinSpeakerMode: () -> Unit,
-    val onLeaveSpeakerMode: () -> Unit
+    val onLeaveSpeakerMode: () -> Unit,
+    val onKillSwitch: () -> Unit
 )

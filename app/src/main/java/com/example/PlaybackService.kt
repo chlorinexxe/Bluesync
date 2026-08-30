@@ -115,6 +115,11 @@ class PlaybackService : Service() {
 
     private var broadcastLoopJob: Job? = null
 
+    // The client re-broadcasts its notification-relevant key here to skip rebuilding when
+    // nothing the notification actually shows has changed - without this, every ~900ms host
+    // sync tick (position ticks included) triggered a full startForeground() call.
+    private var lastNotifiedContentKey: String? = null
+
     inner class LocalBinder : Binder() {
         fun getService(): PlaybackService = this@PlaybackService
     }
@@ -147,6 +152,20 @@ class PlaybackService : Service() {
         bleDiscoveryEngine.startAdvertising()
         if (isHostMode.value) {
             speakerSyncEngine.startHosting()
+        }
+
+        // broadcastTrackToSpeakers() only fires on track transitions - a speaker joining
+        // mid-song would otherwise get silence until the host happens to skip tracks. Push
+        // the currently-loaded track the moment the connected count goes up so a fresh join
+        // has something to play right away.
+        var lastKnownSpeakerCount = 0
+        scope.launch {
+            speakerSyncEngine.connectedSpeakerCount.collect { count ->
+                if (count > lastKnownSpeakerCount) {
+                    broadcastTrackToSpeakers()
+                }
+                lastKnownSpeakerCount = count
+            }
         }
     }
 
@@ -185,6 +204,7 @@ class PlaybackService : Service() {
                         _currentTrackIndex.value = currentMediaItemIndex
                         broadcastHostStateToClient(includeMetadata = true)
                         updateForegroundNotification()
+                        broadcastSpeakerSyncNow()
                     }
                 }
 
@@ -197,6 +217,7 @@ class PlaybackService : Service() {
                         _currentTrackIndex.value = currentMediaItemIndex
                         broadcastHostStateToClient(includeMetadata = true)
                         updateForegroundNotification()
+                        broadcastSpeakerSyncNow()
                     }
                 }
 
@@ -494,7 +515,11 @@ class PlaybackService : Service() {
         scope.launch(Dispatchers.Main) {
             val cmdTime = cmd.timestamp
             val age = System.currentTimeMillis() - cmdTime
-            if (age > 3000L) {
+            // SEEK targets an absolute position, so it's still correct to apply no matter how
+            // delayed it arrived - unlike NEXT/PREV/PLAY_INDEX, which are relative to "now" and
+            // can genuinely go stale during a connection stall. Dropping delayed seeks here was
+            // exactly what made seeking look "stuck" right after a brief Bluetooth hiccup.
+            if (age > 3000L && cmd.command != "SEEK") {
                 Log.d(TAG, "Discarding stale Bluetooth command: ${cmd.command} (delayed by ${age}ms during connection stall)")
                 return@launch
             }
@@ -1038,15 +1063,20 @@ class PlaybackService : Service() {
                 // hiccups. Independent of the control channel - runs whenever hosting and
                 // native (not hook mode, which has no local file to have sent in the first
                 // place).
-                if (isHostMode.value && !hostUseNotificationHook.value) {
-                    val player = exoPlayer
-                    if (player != null) {
-                        speakerSyncEngine.broadcastSync(player.currentPosition, player.isPlaying)
-                    }
-                }
+                broadcastSpeakerSyncNow()
                 delay(900)
             }
         }
+    }
+
+    /** Pushes an immediate position/play-state correction to connected speakers, instead of
+     * waiting for the next periodic tick. Called both from that periodic loop and right after
+     * play/pause/seek so speakers reflect a host's transport control within one round-trip
+     * instead of up to 900ms later. No-op outside native-library host mode. */
+    private fun broadcastSpeakerSyncNow() {
+        if (!isHostMode.value || hostUseNotificationHook.value) return
+        val player = exoPlayer ?: return
+        speakerSyncEngine.broadcastSync(player.currentPosition, player.isPlaying)
     }
 
     /** Sends the current native-library track to any connected speakers. No-op in
@@ -1066,18 +1096,49 @@ class PlaybackService : Service() {
         leaveSpeakerMode()
         speakerSyncEngine.joinAsSpeaker(device)
 
+        // Tracks the file currently loaded into speakerPlayer while it's still downloading, so a
+        // repeat announcement for the *same* track (more of it landed, or it just finished) is
+        // recognized as a top-up rather than a fresh track and doesn't restart playback.
+        var loadingUri: Uri? = null
+
         speakerJob = scope.launch {
             launch {
                 speakerSyncEngine.clientState.collect { state ->
                     if (state is com.example.bluetooth.SpeakerSyncEngine.SpeakerClientState.Ready) {
                         if (speakerPlayer == null) {
-                            speakerPlayer = ExoPlayer.Builder(this@PlaybackService).build()
+                            speakerPlayer = ExoPlayer.Builder(this@PlaybackService).build().apply {
+                                addListener(object : Player.Listener {
+                                    override fun onIsPlayingChanged(isPlaying: Boolean) = updateForegroundNotification()
+                                    override fun onPlaybackStateChanged(state: Int) = updateForegroundNotification()
+                                })
+                            }
                         }
-                        speakerPlayer?.apply {
-                            setMediaItem(MediaItem.fromUri(state.fileUri))
-                            prepare()
-                            play()
+                        val player = speakerPlayer!!
+                        if (state.fileUri == loadingUri) {
+                            // More of the same track has landed (or it just finished) - re-open
+                            // the file in place, preserving position/play state, instead of
+                            // restarting from zero every time a fresh chunk arrives.
+                            val pos = player.currentPosition
+                            val wasPlaying = player.isPlaying
+                            player.setMediaItem(MediaItem.fromUri(state.fileUri))
+                            player.prepare()
+                            player.seekTo(pos)
+                            if (wasPlaying) player.play()
+                        } else {
+                            // A brand-new track (first chunk just arrived) - jump straight to
+                            // wherever the host currently is instead of starting from 0. The
+                            // host has been broadcasting SYNC ticks since the moment the socket
+                            // connected (well before this first chunk finished downloading), so
+                            // its last reported position is already cached here.
+                            player.setMediaItem(MediaItem.fromUri(state.fileUri))
+                            player.prepare()
+                            speakerSyncEngine.syncSignal.value?.let { (hostPosition, _) ->
+                                player.seekTo(hostPosition)
+                            }
+                            player.play()
                         }
+                        loadingUri = if (!state.isComplete) state.fileUri else null
+                        updateForegroundNotification()
                     }
                 }
             }
@@ -1101,6 +1162,18 @@ class PlaybackService : Service() {
         speakerSyncEngine.leaveSpeakerMode()
         speakerPlayer?.release()
         speakerPlayer = null
+        updateForegroundNotification()
+    }
+
+    /** One-stop panic button: tears down everything active (control connection, speaker
+     * hosting/following, playback) so the app goes fully idle from wherever it currently is. */
+    fun killSwitch() {
+        leaveSpeakerMode()
+        speakerSyncEngine.stopHosting()
+        bluetoothEngine.setUserDisconnected()
+        bluetoothEngine.cleanup(explicit = true)
+        exoPlayer?.pause()
+        updateForegroundNotification()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -1206,6 +1279,13 @@ class PlaybackService : Service() {
                 return SimpleTrackInfo(title, artist, isPlaying, bitmap)
             }
         } else {
+            // If we're actually sounding out audio on this device as a joined speaker, that's
+            // what the notification should reflect - not the host's (silent, remote) track.
+            val speakerState = speakerSyncEngine.clientState.value
+            if (speakerState is com.example.bluetooth.SpeakerSyncEngine.SpeakerClientState.Ready) {
+                return SimpleTrackInfo(speakerState.title, speakerState.artist, speakerPlayer?.isPlaying ?: false, null)
+            }
+
             val state = _clientPlaybackState.value
             val title = state?.currentTitle ?: "Bridge Idle"
             val artist = state?.currentArtist ?: "Select Host Source"
@@ -1239,9 +1319,15 @@ class PlaybackService : Service() {
 
         val modeText = if (isHostMode.value) {
             if (hostUseNotificationHook.value) "Host Mode (Hooked)" else "Host Mode (Native)"
+        } else if (speakerSyncEngine.clientState.value is com.example.bluetooth.SpeakerSyncEngine.SpeakerClientState.Ready) {
+            "Speaker Mode"
         } else {
             "Client Mode (Remote)"
         }
+
+        val contentKey = "${trackInfo.title}|${trackInfo.artist}|${trackInfo.isPlaying}|$modeText"
+        if (contentKey == lastNotifiedContentKey) return
+        lastNotifiedContentKey = contentKey
 
         val flag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE

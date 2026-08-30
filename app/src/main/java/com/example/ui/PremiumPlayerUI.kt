@@ -34,6 +34,7 @@ val GlassSurface = Color(0x14FFFFFF)
 val CyanGlow = Color(0xFF4FD1E5)
 val RosePulse = Color(0xFFE85C8A)
 val PureWhite = Color(0xFFFFFFFF)
+val DangerRed = Color(0xFFFF5252)
 
 @Composable
 fun PremiumPlayerUI(
@@ -359,7 +360,8 @@ fun PremiumPlayerUI(
             onSelectSong = { song, idx -> hapticDriver.triggerClick(); viewModel.playSongWithId(song.id, idx) },
             onLoadMoreSongs = { viewModel.requestMoreSongs() },
             onJoinSpeakerMode = { hapticDriver.triggerClick(); viewModel.joinSpeakerMode() },
-            onLeaveSpeakerMode = { hapticDriver.triggerClick(); viewModel.leaveSpeakerMode() }
+            onLeaveSpeakerMode = { hapticDriver.triggerClick(); viewModel.leaveSpeakerMode() },
+            onKillSwitch = { hapticDriver.triggerClick(); viewModel.killSwitch() }
         )
 
         if (isLandscape) {

@@ -17,9 +17,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 
 /** Tall-screen orientation: header, connection status, and a scrollable now-playing card
  * followed by the queue, stacked vertically. Scrolling the queue collapses the now-playing
@@ -38,6 +40,7 @@ fun PortraitPlayerLayout(
             queueListState.firstVisibleItemIndex > 0 || queueListState.firstVisibleItemScrollOffset > 80
         }
     }
+    val coroutineScope = rememberCoroutineScope()
 
     Column(
         modifier = modifier
@@ -49,6 +52,13 @@ fun PortraitPlayerLayout(
             isHostMode = state.isHostMode,
             onSelectHost = actions.onSelectHostMode,
             onSelectClient = actions.onSelectClientMode,
+            bluetoothState = state.bluetoothState,
+            hostUseNotificationHook = state.hostUseNotificationHook,
+            connectedSpeakerCount = state.connectedSpeakerCount,
+            speakerClientState = state.speakerClientState,
+            onJoinSpeaker = actions.onJoinSpeakerMode,
+            onLeaveSpeaker = actions.onLeaveSpeakerMode,
+            onKillSwitch = actions.onKillSwitch,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)
         )
 
@@ -70,23 +80,12 @@ fun PortraitPlayerLayout(
             )
         }
 
-        AnimatedVisibility(visible = state.bluetoothState == com.example.bluetooth.BluetoothConnectionState.CONNECTED && !isCollapsed) {
-            SpeakerModeCard(
-                isHostMode = state.isHostMode,
-                hostUseNotificationHook = state.hostUseNotificationHook,
-                connectedSpeakerCount = state.connectedSpeakerCount,
-                speakerClientState = state.speakerClientState,
-                onJoin = actions.onJoinSpeakerMode,
-                onLeave = actions.onLeaveSpeakerMode,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-            )
-        }
-
         Crossfade(targetState = isCollapsed, label = "nowPlayingCollapse") { collapsed ->
             if (collapsed) {
                 MiniPlayerBar(
                     state = state,
                     actions = actions,
+                    onExpand = { coroutineScope.launch { queueListState.animateScrollToItem(0) } },
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
             } else {
@@ -143,6 +142,13 @@ fun LandscapePlayerLayout(
                 isHostMode = state.isHostMode,
                 onSelectHost = actions.onSelectHostMode,
                 onSelectClient = actions.onSelectClientMode,
+                bluetoothState = state.bluetoothState,
+                hostUseNotificationHook = state.hostUseNotificationHook,
+                connectedSpeakerCount = state.connectedSpeakerCount,
+                speakerClientState = state.speakerClientState,
+                onJoinSpeaker = actions.onJoinSpeakerMode,
+                onLeaveSpeaker = actions.onLeaveSpeakerMode,
+                onKillSwitch = actions.onKillSwitch,
                 compact = true
             )
 
@@ -158,17 +164,6 @@ fun LandscapePlayerLayout(
 
             if (state.isHostMode) {
                 SourceToggleRow(useNotificationHook = state.hostUseNotificationHook, onToggle = actions.onToggleSource)
-            }
-
-            if (state.bluetoothState == com.example.bluetooth.BluetoothConnectionState.CONNECTED) {
-                SpeakerModeCard(
-                    isHostMode = state.isHostMode,
-                    hostUseNotificationHook = state.hostUseNotificationHook,
-                    connectedSpeakerCount = state.connectedSpeakerCount,
-                    speakerClientState = state.speakerClientState,
-                    onJoin = actions.onJoinSpeakerMode,
-                    onLeave = actions.onLeaveSpeakerMode
-                )
             }
 
             QueueSection(

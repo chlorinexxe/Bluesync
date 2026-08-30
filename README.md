@@ -1,21 +1,37 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# BlueSync
 
-# Run and deploy your AI Studio app
+BlueSync turns one Android phone into a Bluetooth-controlled music **Host** and another into its **Remote**. The Host plays music - either its own local library or whatever's currently playing in another app (Spotify, Poweramp, YouTube Music, etc., via notification access) - and the Remote controls playback, browses the queue, and mirrors what's playing, all over a direct classic Bluetooth connection (no internet, no pairing account required).
 
-This contains everything you need to run your app locally.
+## Features
 
-View your app in AI Studio: https://ai.studio/apps/70df9b4a-4623-4acd-8a7c-69c4e1e2606d
+- **Host / Remote roles**, swappable live without dropping the connection - either phone can flip to controlling the other mid-session.
+- **Two host sources**: play BlueSync's own local library, or hook the currently-playing session of any other media app on the Host phone and relay its metadata/controls.
+- **Fast discovery**: a BLE beacon lets phones find each other in about a second, falling back to classic Bluetooth discovery on devices that restrict BLE advertising.
+- **Speaker mode**: any number of connected phones can join in and play the Host's current track locally, roughly in sync with each other - an ad-hoc multi-room speaker group. Native-library Host mode only (there's no way to capture another app's audio to relay it).
+- Lazy-paginated queue browsing, a collapsing now-playing header, soft haptics, and a one-tap kill switch to instantly stop the connection, speaker mode, and playback.
+- Stays connected across screen-off/Doze via a scoped wake lock and an optional battery-optimization exemption prompt.
 
-## Run Locally
+## Requirements
 
-**Prerequisites:**  [Android Studio](https://developer.android.com/studio)
+- [Android Studio](https://developer.android.com/studio), or a standalone JDK 21 (Temurin) + the Android SDK if building from the command line.
+- **JDK 21 specifically** - a newer default JDK on your machine will make Gradle's jlink step fail.
+- Two Android devices (or one device + emulator) to actually test Host/Remote behavior - a single device can't talk to itself over Bluetooth.
 
+## Run locally
 
-1. Open Android Studio
-2. Select **Open** and choose the directory containing this project
-3. Allow Android Studio to fix any incompatibilities as it imports the project.
-4. Create a file named `.env` in the project directory and set `GEMINI_API_KEY` in that file to your Gemini API key (see `.env.example` for an example)
-5. Remove this line from the app's `build.gradle.kts` file: `signingConfig = signingConfigs.getByName("debugConfig")`
-6. Run the app on an emulator or physical device
+1. Open Android Studio and open this project's directory.
+2. Let Android Studio sync/fix Gradle as needed (make sure its configured JDK is 21, not whatever else may be installed).
+3. Run the app on two physical devices (Bluetooth doesn't work in most emulators) - pick Host on one, Remote on the other.
+4. On the Host, grant Notification Access if you want to control a third-party app instead of BlueSync's own library.
+
+### Command line
+
+```
+gradle assembleDebug
+```
+
+This repo has no committed Gradle wrapper, so it builds with whatever `gradle` is on your `PATH` (CI uses 9.5.1). A `debug.keystore` is committed on purpose so local and CI builds share one signing key - reinstalling a CI build over a local one (or vice versa) won't hit a signature mismatch.
+
+## CI
+
+`.github/workflows/build.yml` builds a debug APK on every push to `main` and publishes it as a rolling "latest" GitHub Release (a direct, already-unzipped `.apk` download - the raw workflow artifact is zipped by GitHub's UI, which is easy to mistake for an installable file).

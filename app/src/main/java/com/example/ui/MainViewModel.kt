@@ -229,6 +229,11 @@ class MainViewModel : ViewModel() {
         s.leaveSpeakerMode()
     }
 
+    fun killSwitch() {
+        val s = _service.value ?: return
+        s.killSwitch()
+    }
+
     fun playSongWithId(songId: String, index: Int) {
         val s = _service.value ?: return
         if (s.isHostMode.value) {

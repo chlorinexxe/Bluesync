@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
@@ -50,6 +52,8 @@ class SpeakerSyncEngine(private val context: Context) {
     companion object {
         val SPEAKER_UUID: UUID = UUID.fromString("3f6a9b7e-2c1d-4e88-9a2e-6b5f8c1d4e2a")
         private const val SYNC_DRIFT_THRESHOLD_MS = 200L
+        private const val EARLY_START_BYTES = 200_000L
+        private const val REBUFFER_CHUNK_BYTES = 250_000L
     }
 
     private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
@@ -67,7 +71,13 @@ class SpeakerSyncEngine(private val context: Context) {
     private val _connectedSpeakerCount = MutableStateFlow(0)
     val connectedSpeakerCount: StateFlow<Int> = _connectedSpeakerCount.asStateFlow()
 
-    private class SpeakerConnection(val socket: BluetoothSocket, val out: DataOutputStream, val writeJob: Job)
+    private class SpeakerConnection(val socket: BluetoothSocket, val out: DataOutputStream, val writeJob: Job) {
+        // TRACK_HEADER writes stream raw file bytes right after the header, on the same
+        // stream broadcastSync() writes SYNC messages to every ~900ms - without this, a SYNC
+        // tick landing mid-transfer interleaves its bytes into the audio file and corrupts
+        // every message's framing afterward.
+        val writeMutex = Mutex()
+    }
 
     private fun hasConnectPermission(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -161,9 +171,11 @@ class SpeakerSyncEngine(private val context: Context) {
             for ((address, conn) in speakerConnections) {
                 launch {
                     try {
-                        writeMessage(conn.out, fullHeader)
-                        conn.out.write(bytes)
-                        conn.out.flush()
+                        conn.writeMutex.withLock {
+                            writeMessage(conn.out, fullHeader)
+                            conn.out.write(bytes)
+                            conn.out.flush()
+                        }
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to send track to speaker $address", e)
                     }
@@ -180,7 +192,9 @@ class SpeakerSyncEngine(private val context: Context) {
         for ((address, conn) in speakerConnections) {
             scope.launch {
                 try {
-                    writeMessage(conn.out, message)
+                    conn.writeMutex.withLock {
+                        writeMessage(conn.out, message)
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to send sync to speaker $address", e)
                 }
@@ -215,7 +229,11 @@ class SpeakerSyncEngine(private val context: Context) {
     sealed class SpeakerClientState {
         object Disconnected : SpeakerClientState()
         object Connecting : SpeakerClientState()
-        data class Ready(val title: String, val artist: String, val fileUri: Uri) : SpeakerClientState()
+        // isComplete=false fires as soon as a small initial buffer is on disk, so playback can
+        // start almost immediately instead of waiting out the whole (multi-MB, classic-BT-speed)
+        // transfer; isComplete=true fires again once the rest has arrived, at the same fileUri,
+        // so the caller can seamlessly swap from the partial file to the full one in place.
+        data class Ready(val title: String, val artist: String, val fileUri: Uri, val isComplete: Boolean = true) : SpeakerClientState()
         object Failed : SpeakerClientState()
     }
 
@@ -256,18 +274,32 @@ class SpeakerSyncEngine(private val context: Context) {
                             pendingArtist = message.artist ?: ""
 
                             val cacheFile = File(context.cacheDir, "speaker_track_${pendingSongId ?: "current"}.audio")
+                            val fileUri = Uri.fromFile(cacheFile)
+                            // Start playback once a small early chunk is down, then keep
+                            // re-announcing every REBUFFER_CHUNK_BYTES so the player can top
+                            // itself up before it runs dry - a single early announcement played
+                            // a few seconds of audio and then went silent for the rest of the
+                            // (classic-BT-speed, so potentially minutes-long) transfer.
+                            var nextAnnounceAt = minOf(totalBytes, maxOf(EARLY_START_BYTES, totalBytes / 8))
                             cacheFile.outputStream().use { fileOut ->
                                 val buffer = ByteArray(8192)
                                 var remaining = totalBytes
+                                var received = 0L
                                 while (remaining > 0) {
                                     val toRead = minOf(buffer.size.toLong(), remaining).toInt()
                                     val read = input.read(buffer, 0, toRead)
                                     if (read <= 0) break
                                     fileOut.write(buffer, 0, read)
                                     remaining -= read
+                                    received += read
+                                    if (received >= nextAnnounceAt) {
+                                        fileOut.flush()
+                                        _clientState.value = SpeakerClientState.Ready(pendingTitle, pendingArtist, fileUri, isComplete = false)
+                                        nextAnnounceAt += REBUFFER_CHUNK_BYTES
+                                    }
                                 }
                             }
-                            _clientState.value = SpeakerClientState.Ready(pendingTitle, pendingArtist, Uri.fromFile(cacheFile))
+                            _clientState.value = SpeakerClientState.Ready(pendingTitle, pendingArtist, fileUri, isComplete = true)
                         }
                         "SYNC" -> {
                             val position = message.positionMs

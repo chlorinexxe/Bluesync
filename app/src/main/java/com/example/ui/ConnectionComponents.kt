@@ -3,20 +3,25 @@ package com.example.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.BluetoothSearching
 import androidx.compose.material.icons.rounded.BluetoothConnected
 import androidx.compose.material.icons.rounded.BluetoothDisabled
 import androidx.compose.material.icons.rounded.CellTower
+import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
@@ -45,6 +50,13 @@ fun AppHeader(
     isHostMode: Boolean,
     onSelectHost: () -> Unit,
     onSelectClient: () -> Unit,
+    bluetoothState: BluetoothConnectionState,
+    hostUseNotificationHook: Boolean,
+    connectedSpeakerCount: Int,
+    speakerClientState: SpeakerSyncEngine.SpeakerClientState,
+    onJoinSpeaker: () -> Unit,
+    onLeaveSpeaker: () -> Unit,
+    onKillSwitch: () -> Unit,
     compact: Boolean = false,
     modifier: Modifier = Modifier
 ) {
@@ -67,16 +79,58 @@ fun AppHeader(
             )
         }
 
-        Row(
-            modifier = Modifier
-                .clip(RoundedCornerShape(10.dp))
-                .background(GlassSurface)
-                .padding(3.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            ModeChip(text = "Host", selected = isHostMode, color = CyanGlow, compact = compact, onClick = onSelectHost)
-            ModeChip(text = "Remote", selected = !isHostMode, color = RosePulse, compact = compact, onClick = onSelectClient)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(GlassSurface)
+                    .padding(3.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ModeChip(text = "Host", selected = isHostMode, color = CyanGlow, compact = compact, onClick = onSelectHost)
+                ModeChip(text = "Remote", selected = !isHostMode, color = RosePulse, compact = compact, onClick = onSelectClient)
+            }
+
+            val speakerAvailable = bluetoothState == BluetoothConnectionState.CONNECTED && !(isHostMode && hostUseNotificationHook)
+            if (speakerAvailable) {
+                Spacer(modifier = Modifier.width(6.dp))
+                SpeakerHeaderButton(
+                    isHostMode = isHostMode,
+                    connectedSpeakerCount = connectedSpeakerCount,
+                    speakerClientState = speakerClientState,
+                    compact = compact,
+                    onJoin = onJoinSpeaker,
+                    onLeave = onLeaveSpeaker
+                )
+            }
+
+            if (bluetoothState != BluetoothConnectionState.DISCONNECTED) {
+                Spacer(modifier = Modifier.width(6.dp))
+                KillSwitchButton(compact = compact, onClick = onKillSwitch)
+            }
         }
+    }
+}
+
+/** One-tap panic button: stops the connection, speaker mode (either side), and playback in one
+ * shot. Only shown once there's actually something active to stop. */
+@Composable
+private fun KillSwitchButton(compact: Boolean, onClick: () -> Unit) {
+    val size = if (compact) 30.dp else 34.dp
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(RoundedCornerShape(10.dp))
+            .background(DangerRed.copy(alpha = 0.15f))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            Icons.Rounded.PowerSettingsNew,
+            contentDescription = "Stop everything",
+            tint = DangerRed,
+            modifier = Modifier.width(16.dp)
+        )
     }
 }
 
@@ -217,74 +271,67 @@ fun SourceToggleRow(
 }
 
 /**
- * "Speaker mode": on the host, an informational count of how many phones are currently
- * listening in sync; on a connected remote, a way to join in as one of those speakers.
- * Only shown once actually connected - joining reuses that same connection's peer device on a
- * separate channel, so there's no one to join until the regular connection exists.
- *
- * Speaker mode only has anything to stream when the host is playing its own local library -
- * there's no way to capture a hooked third-party app's audio, so the card explains that rather
- * than just silently doing nothing when tapped.
+ * Compact speaker-mode toggle shown right next to the Host/Remote pill in [AppHeader], so it's
+ * always visible once connected instead of scrolled away in a separate card. On the host it's a
+ * read-only badge of how many phones are listening in sync; on a connected remote, tapping it
+ * joins/leaves. Speaker mode only has anything to stream when the host plays its own local
+ * library (a hooked third-party app's audio can't be captured), so the caller hides this button
+ * entirely in that case rather than showing a button that silently does nothing.
  */
 @Composable
-fun SpeakerModeCard(
+private fun SpeakerHeaderButton(
     isHostMode: Boolean,
-    hostUseNotificationHook: Boolean,
     connectedSpeakerCount: Int,
     speakerClientState: SpeakerSyncEngine.SpeakerClientState,
+    compact: Boolean,
     onJoin: () -> Unit,
     onLeave: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color.White.copy(alpha = 0.03f))
-            .padding(12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.AutoMirrored.Rounded.VolumeUp, contentDescription = null, tint = Color.LightGray.copy(alpha = 0.7f), modifier = Modifier.width(18.dp))
-            Spacer(modifier = Modifier.width(10.dp))
-            Column {
-                Text("Speaker mode", color = PureWhite, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                val subtitle = if (isHostMode) {
-                    if (hostUseNotificationHook) {
-                        "Not available while following a music app"
-                    } else when (connectedSpeakerCount) {
-                        0 -> "No speakers listening yet"
-                        1 -> "1 phone listening in sync"
-                        else -> "$connectedSpeakerCount phones listening in sync"
-                    }
-                } else {
-                    when (speakerClientState) {
-                        is SpeakerSyncEngine.SpeakerClientState.Disconnected -> "Play the host's music here too"
-                        is SpeakerSyncEngine.SpeakerClientState.Connecting -> "Connecting…"
-                        is SpeakerSyncEngine.SpeakerClientState.Ready -> "${speakerClientState.title} - ${speakerClientState.artist}"
-                        is SpeakerSyncEngine.SpeakerClientState.Failed -> "Couldn't join - try again"
-                    }
-                }
-                Text(subtitle, color = Color.LightGray.copy(alpha = 0.5f), fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
+    val active = if (isHostMode) connectedSpeakerCount > 0 else speakerClientState is SpeakerSyncEngine.SpeakerClientState.Ready
+    val isConnecting = !isHostMode && speakerClientState is SpeakerSyncEngine.SpeakerClientState.Connecting
+    val tint = if (active) CyanGlow else Color.LightGray.copy(alpha = 0.6f)
+    val size = if (compact) 30.dp else 34.dp
 
-        if (!isHostMode) {
-            when (speakerClientState) {
-                is SpeakerSyncEngine.SpeakerClientState.Disconnected, is SpeakerSyncEngine.SpeakerClientState.Failed -> {
-                    Button(onClick = onJoin, colors = ButtonDefaults.buttonColors(containerColor = RosePulse)) {
-                        Text("Join", color = PureWhite, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(RoundedCornerShape(10.dp))
+            .background(GlassSurface)
+            .then(
+                if (isHostMode) Modifier
+                else Modifier.clickable {
+                    when (speakerClientState) {
+                        is SpeakerSyncEngine.SpeakerClientState.Disconnected,
+                        is SpeakerSyncEngine.SpeakerClientState.Failed -> onJoin()
+                        is SpeakerSyncEngine.SpeakerClientState.Ready -> onLeave()
+                        is SpeakerSyncEngine.SpeakerClientState.Connecting -> Unit
                     }
                 }
-                is SpeakerSyncEngine.SpeakerClientState.Connecting -> {
-                    CircularProgressIndicator(modifier = Modifier.width(20.dp).height(20.dp), color = RosePulse, strokeWidth = 2.dp)
-                }
-                is SpeakerSyncEngine.SpeakerClientState.Ready -> {
-                    OutlinedButton(onClick = onLeave) {
-                        Text("Leave", color = PureWhite, fontSize = 11.sp)
-                    }
-                }
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (isConnecting) {
+            CircularProgressIndicator(modifier = Modifier.width(14.dp).height(14.dp), color = RosePulse, strokeWidth = 2.dp)
+        } else {
+            Icon(
+                Icons.AutoMirrored.Rounded.VolumeUp,
+                contentDescription = if (isHostMode) "Speaker mode" else if (active) "Leave speaker mode" else "Join speaker mode",
+                tint = tint,
+                modifier = Modifier.width(16.dp)
+            )
+        }
+        if (isHostMode && connectedSpeakerCount > 0) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .offset(x = 4.dp, y = (-4).dp)
+                    .size(14.dp)
+                    .clip(CircleShape)
+                    .background(CyanGlow),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(connectedSpeakerCount.toString(), fontSize = 8.sp, color = Color.Black, fontWeight = FontWeight.Bold)
             }
         }
     }
