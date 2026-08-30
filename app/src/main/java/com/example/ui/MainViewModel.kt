@@ -127,8 +127,18 @@ class MainViewModel : ViewModel() {
         _service.value = playbackService
         if (playbackService != null) {
             refreshPairedDevices()
-            if (!playbackService.isHostMode.value) {
-                playbackService.bluetoothEngine.tryAutoConnect()
+            // Seamlessly resume whatever role this device was last in - a client reconnects to
+            // its last host, a host goes straight to listening - rather than making the user
+            // tap "Start hosting"/"Find a host" by hand every time the app opens. Guarded on
+            // DISCONNECTED so re-opening the app while already connected/listening (e.g. after
+            // briefly backgrounding it) doesn't tear down and restart a working connection.
+            val engine = playbackService.bluetoothEngine
+            if (engine.connectionState.value == BluetoothConnectionState.DISCONNECTED) {
+                if (playbackService.isHostMode.value) {
+                    engine.startHostServer()
+                } else {
+                    engine.tryAutoConnect()
+                }
             }
         }
     }

@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.flow.StateFlow
 
 /** Tall-screen orientation: header, connection status, and a scrollable now-playing card
  * followed by the queue, stacked vertically. */
@@ -22,6 +23,7 @@ fun PortraitPlayerLayout(
     state: PlayerUiState,
     actions: PlayerActions,
     compact: Boolean,
+    positionFlow: StateFlow<Long>,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -55,13 +57,15 @@ fun PortraitPlayerLayout(
             )
         }
 
+        // Fixed natural height, never weighted/clipped - the play/pause button and the rest
+        // of the transport controls must always render in full, never get scrolled out of
+        // view or clipped by a height budget that doesn't fit the content.
         NowPlayingCard(
             state = state,
             actions = actions,
             compact = compact,
-            modifier = Modifier
-                .weight(1.3f)
-                .padding(horizontal = 16.dp, vertical = 8.dp)
+            positionFlow = positionFlow,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
         )
 
         QueueSection(
@@ -80,6 +84,7 @@ fun PortraitPlayerLayout(
 fun LandscapePlayerLayout(
     state: PlayerUiState,
     actions: PlayerActions,
+    positionFlow: StateFlow<Long>,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -91,7 +96,7 @@ fun LandscapePlayerLayout(
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-            NowPlayingCard(state = state, actions = actions, compact = true, modifier = Modifier.fillMaxSize())
+            NowPlayingCard(state = state, actions = actions, compact = true, positionFlow = positionFlow, modifier = Modifier.fillMaxSize())
         }
 
         Column(

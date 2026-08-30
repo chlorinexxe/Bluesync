@@ -65,11 +65,14 @@ class BluetoothConnectionEngine(private val context: Context) {
     private val _discoveredDevices = MutableStateFlow<List<BluetoothDevice>>(emptyList())
     val discoveredDevices: StateFlow<List<BluetoothDevice>> = _discoveredDevices.asStateFlow()
 
-    private var serverSocket: BluetoothServerSocket? = null
-    private var clientSocket: BluetoothSocket? = null
-    
-    private var writer: PrintWriter? = null
-    private var reader: BufferedReader? = null
+    // Written from the IO dispatcher, read/cleared from cleanup() which can be called from any
+    // thread (most call sites are the main thread) - @Volatile guarantees the null-out in
+    // cleanup() is actually visible to whichever thread reads these next.
+    @Volatile private var serverSocket: BluetoothServerSocket? = null
+    @Volatile private var clientSocket: BluetoothSocket? = null
+
+    @Volatile private var writer: PrintWriter? = null
+    @Volatile private var reader: BufferedReader? = null
 
     private val ioDispatcher = Dispatchers.IO
     private val scope = CoroutineScope(Dispatchers.Default + Job())
@@ -207,6 +210,18 @@ class BluetoothConnectionEngine(private val context: Context) {
         }
     }
 
+    // onConnectionStateChanged is application code we don't control the thread-safety of - the
+    // PlaybackService listener touches ExoPlayer, which throws IllegalStateException (crashing
+    // the whole process) if called off the main thread. Every call site here runs on the IO
+    // dispatcher, so route the callback through Main every time rather than relying on each
+    // call site to remember to.
+    private fun updateConnectionState(state: BluetoothConnectionState) {
+        _connectionState.value = state
+        scope.launch(Dispatchers.Main) {
+            onConnectionStateChanged?.invoke(state)
+        }
+    }
+
     @SuppressLint("MissingPermission")
     fun startHostServer() {
         if (!isBluetoothEnabled() || !hasBluetoothConnectPermission()) {
@@ -217,8 +232,7 @@ class BluetoothConnectionEngine(private val context: Context) {
         autoReconnectJob?.cancel()
         userIntentDisconnected = false
         cleanup(explicit = false)
-        _connectionState.value = BluetoothConnectionState.LISTENING
-        onConnectionStateChanged?.invoke(BluetoothConnectionState.LISTENING)
+        updateConnectionState(BluetoothConnectionState.LISTENING)
         _connectedDeviceName.value = null
 
         listeningJob = scope.launch(ioDispatcher) {
@@ -243,14 +257,12 @@ class BluetoothConnectionEngine(private val context: Context) {
                 if (socket != null) {
                     manageConnectedSocket(socket, isHost = true)
                 } else {
-                    _connectionState.value = BluetoothConnectionState.DISCONNECTED
-                    onConnectionStateChanged?.invoke(BluetoothConnectionState.DISCONNECTED)
+                    updateConnectionState(BluetoothConnectionState.DISCONNECTED)
                 }
 
             } catch (e: Exception) {
                 Log.e(TAG, "Failed in startHostServer", e)
-                _connectionState.value = BluetoothConnectionState.DISCONNECTED
-                onConnectionStateChanged?.invoke(BluetoothConnectionState.DISCONNECTED)
+                updateConnectionState(BluetoothConnectionState.DISCONNECTED)
             } finally {
                 closeServerSocketOnly()
             }
@@ -267,8 +279,7 @@ class BluetoothConnectionEngine(private val context: Context) {
         autoReconnectJob?.cancel()
         userIntentDisconnected = false
         cleanup(explicit = false)
-        _connectionState.value = BluetoothConnectionState.CONNECTING
-        onConnectionStateChanged?.invoke(BluetoothConnectionState.CONNECTING)
+        updateConnectionState(BluetoothConnectionState.CONNECTING)
         _connectedDeviceName.value = device.name ?: "Unknown Device"
 
         connectionJob = scope.launch(ioDispatcher) {
@@ -285,8 +296,7 @@ class BluetoothConnectionEngine(private val context: Context) {
                 manageConnectedSocket(socket, isHost = false)
             } catch (e: Exception) {
                 Log.e(TAG, "Connection failed", e)
-                _connectionState.value = BluetoothConnectionState.DISCONNECTED
-                onConnectionStateChanged?.invoke(BluetoothConnectionState.DISCONNECTED)
+                updateConnectionState(BluetoothConnectionState.DISCONNECTED)
                 _connectedDeviceName.value = null
                 cleanup()
             }
@@ -296,9 +306,8 @@ class BluetoothConnectionEngine(private val context: Context) {
     @SuppressLint("MissingPermission")
     private fun manageConnectedSocket(socket: BluetoothSocket, isHost: Boolean) {
         clientSocket = socket
-        _connectionState.value = BluetoothConnectionState.CONNECTED
-        onConnectionStateChanged?.invoke(BluetoothConnectionState.CONNECTED)
-        
+        updateConnectionState(BluetoothConnectionState.CONNECTED)
+
         try {
             val device = socket.remoteDevice
             _connectedDeviceName.value = device?.name ?: "Remote Controller"
@@ -366,8 +375,7 @@ class BluetoothConnectionEngine(private val context: Context) {
             } finally {
                 Log.d(TAG, "Cleaning up sockets...")
                 val wasConnected = _connectionState.value == BluetoothConnectionState.CONNECTED
-                _connectionState.value = BluetoothConnectionState.DISCONNECTED
-                onConnectionStateChanged?.invoke(BluetoothConnectionState.DISCONNECTED)
+                updateConnectionState(BluetoothConnectionState.DISCONNECTED)
                 _connectedDeviceName.value = null
                 cleanup(explicit = false)
 
@@ -469,27 +477,43 @@ class BluetoothConnectionEngine(private val context: Context) {
         connectionJob?.cancel()
         connectionJob = null
 
-        closeServerSocketOnly()
-
-        try {
-            writer?.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing writer", e)
-        }
+        // Every call site for cleanup() (mode switches, disconnect, starting a new
+        // connection) runs on the main thread. BluetoothSocket/stream close() is a blocking
+        // call that can hang for seconds when another thread is stuck in a concurrent
+        // read() on the same socket - which the read loop in manageConnectedSocket always is
+        // while connected. Snapshot the resources and null them out immediately (so nothing
+        // else can touch a socket mid-teardown), but do the actual blocking close() off the
+        // calling thread so the UI never freezes on a mode switch or disconnect.
+        val serverSocketToClose = serverSocket
+        val writerToClose = writer
+        val readerToClose = reader
+        val clientSocketToClose = clientSocket
+        serverSocket = null
         writer = null
-
-        try {
-            reader?.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing reader", e)
-        }
         reader = null
-
-        try {
-            clientSocket?.close()
-        } catch (e: Exception) {
-            Log.e(TAG, "Error closing client socket", e)
-        }
         clientSocket = null
+
+        scope.launch(ioDispatcher) {
+            try {
+                serverSocketToClose?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing server socket", e)
+            }
+            try {
+                writerToClose?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing writer", e)
+            }
+            try {
+                readerToClose?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing reader", e)
+            }
+            try {
+                clientSocketToClose?.close()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing client socket", e)
+            }
+        }
     }
 }

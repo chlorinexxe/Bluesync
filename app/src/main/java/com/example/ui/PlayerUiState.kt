@@ -21,7 +21,6 @@ data class PlayerUiState(
     val trackGenre: String,
     val trackArtUri: Any?,
     val isPlaying: Boolean,
-    val currentPosition: Long,
     val totalDuration: Long,
     val isShuffleActive: Boolean,
     val repeatState: String,

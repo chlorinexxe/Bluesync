@@ -46,6 +46,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -67,6 +68,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import kotlin.math.roundToLong
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * The main now-playing surface: art, title/artist, seek bar, transport controls, volume.
@@ -78,6 +80,7 @@ fun NowPlayingCard(
     state: PlayerUiState,
     actions: PlayerActions,
     compact: Boolean,
+    positionFlow: StateFlow<Long>,
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -92,7 +95,7 @@ fun NowPlayingCard(
     ) {
         AlbumArt(state = state, compact = compact)
         TrackMetadata(state = state, compact = compact)
-        SeekBarSection(state = state, actions = actions)
+        SeekBarSection(state = state, actions = actions, positionFlow = positionFlow)
         TransportControlsRow(state = state, actions = actions, compact = compact)
         VolumeRow(state = state, actions = actions, compact = compact)
     }
@@ -165,9 +168,13 @@ private fun TrackMetadata(state: PlayerUiState, compact: Boolean) {
 }
 
 @Composable
-private fun SeekBarSection(state: PlayerUiState, actions: PlayerActions) {
+private fun SeekBarSection(state: PlayerUiState, actions: PlayerActions, positionFlow: StateFlow<Long>) {
+    // Collected right here, at the smallest possible scope - this ticks every 100ms, and only
+    // this composable (a Canvas + two Text labels) should pay for that, not the whole screen.
+    val currentPosition by positionFlow.collectAsState()
+
     val totalDurationSec = state.totalDuration / 1000f
-    val currentPositionSec = state.currentPosition / 1000f
+    val currentPositionSec = currentPosition / 1000f
     val rawSliderVal = if (totalDurationSec > 0f) currentPositionSec / totalDurationSec else 0f
     var localDragFraction by remember { mutableStateOf<Float?>(null) }
     val activeSliderValue = localDragFraction ?: rawSliderVal
@@ -191,7 +198,7 @@ private fun SeekBarSection(state: PlayerUiState, actions: PlayerActions) {
             modifier = Modifier.fillMaxWidth()
         )
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(formatDuration(state.currentPosition), fontSize = 11.sp, color = Color.LightGray.copy(alpha = 0.55f))
+            Text(formatDuration(currentPosition), fontSize = 11.sp, color = Color.LightGray.copy(alpha = 0.55f))
             Text(formatDuration(state.totalDuration), fontSize = 11.sp, color = Color.LightGray.copy(alpha = 0.55f))
         }
     }

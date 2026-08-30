@@ -48,7 +48,12 @@ fun PremiumPlayerUI(
     val discoveredDevices by viewModel.discoveredDevices.collectAsState()
     val pairedDevices by viewModel.pairedDevices.collectAsState()
     val nearbyBleDevices by viewModel.nearbyBleDevices.collectAsState()
-    val currentPosition by viewModel.currentPlaybackPosition.collectAsState()
+    // Deliberately NOT collected here - it ticks every 100ms, and PlayerUiState carries a
+    // List<Song> (displaySongs), which Compose can't prove immutable, making the whole state
+    // object "unstable." Reading position at this level would force the entire screen -
+    // header, queue list, everything - to fully recompose 10x/second. Instead the raw flow is
+    // handed down to just the seek bar, which is the only thing that actually needs it.
+    val positionFlow = viewModel.currentPlaybackPosition
 
     // Host or Client app state
     val isHostMode = service?.isHostMode?.collectAsState()?.value ?: true
@@ -138,15 +143,21 @@ fun PremiumPlayerUI(
         }
     } else {
         val base64 = clientState?.currentAlbumArt
-        if (base64 != null && base64.startsWith("data:image")) {
-            try {
-                val clean = base64.substringAfter("base64,")
-                val bytes = android.util.Base64.decode(clean, android.util.Base64.DEFAULT)
-                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-            } catch (e: Exception) {
-                null
-            }
-        } else null
+        // currentPosition updates every 100ms, recomposing this whole function - without
+        // remember(), this decode was re-running on the main thread ~10x/second regardless of
+        // whether the art actually changed, which is exactly the kind of sustained main-thread
+        // work that trips an ANR. Only re-decode when the actual art payload changes.
+        remember(base64) {
+            if (base64 != null && base64.startsWith("data:image")) {
+                try {
+                    val clean = base64.substringAfter("base64,")
+                    val bytes = android.util.Base64.decode(clean, android.util.Base64.DEFAULT)
+                    android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                } catch (e: Exception) {
+                    null
+                }
+            } else null
+        }
     }
 
     val isShuffleActive = if (isHostMode) {
@@ -273,7 +284,6 @@ fun PremiumPlayerUI(
             trackGenre = currentTrackGenre,
             trackArtUri = currentTrackArtUri,
             isPlaying = isPlaying,
-            currentPosition = currentPosition,
             totalDuration = totalDuration,
             isShuffleActive = isShuffleActive,
             repeatState = repeatStateString,
@@ -312,9 +322,9 @@ fun PremiumPlayerUI(
         )
 
         if (isLandscape) {
-            LandscapePlayerLayout(state = state, actions = actions)
+            LandscapePlayerLayout(state = state, actions = actions, positionFlow = positionFlow)
         } else {
-            PortraitPlayerLayout(state = state, actions = actions, compact = isCompact)
+            PortraitPlayerLayout(state = state, actions = actions, compact = isCompact, positionFlow = positionFlow)
         }
 
         if (showScanSheet) {

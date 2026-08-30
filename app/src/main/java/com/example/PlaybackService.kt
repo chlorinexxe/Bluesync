@@ -85,6 +85,14 @@ class PlaybackService : Service() {
     private var lastServedHookKey: String? = null
     private var cachedHookAlbumArt: String? = null
 
+    // getCurrentTrackInfo() feeds the foreground notification and is called on every playback
+    // event / synced state update - decoding a bitmap from scratch each time is wasted work
+    // when the art itself hasn't changed since the last call.
+    private var lastNotifLocalSongId: String? = null
+    private var lastNotifLocalBitmap: android.graphics.Bitmap? = null
+    private var lastNotifClientArtKey: String? = null
+    private var lastNotifClientBitmap: android.graphics.Bitmap? = null
+
     private var broadcastLoopJob: Job? = null
 
     inner class LocalBinder : Binder() {
@@ -96,9 +104,17 @@ class PlaybackService : Service() {
         return binder
     }
 
+    private fun prefs() = getSharedPreferences("BlueSyncPrefs", Context.MODE_PRIVATE)
+
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "Service Created")
+        // Restore whatever role/source the user was last using so reopening the app resumes
+        // where they left off instead of always defaulting back to host/native.
+        val savedPrefs = prefs()
+        isHostMode.value = savedPrefs.getBoolean("is_host_mode", true)
+        hostUseNotificationHook.value = savedPrefs.getBoolean("host_use_notification_hook", false)
+
         bluetoothEngine = BluetoothConnectionEngine(applicationContext)
         bleDiscoveryEngine = com.example.bluetooth.BleDiscoveryEngine(applicationContext)
         initializePlayer()
@@ -203,13 +219,17 @@ class PlaybackService : Service() {
     fun toggleAppMode(host: Boolean) {
         if (isHostMode.value == host) return
         isHostMode.value = host
+        prefs().edit().putBoolean("is_host_mode", host).apply()
         bluetoothEngine.cleanup()
         
         if (host) {
             exoPlayer?.pause()
             if (hostUseNotificationHook.value) {
                 broadcastHostStateToClient(includeMetadata = true)
-            } else {
+            } else if (_hostSongs.value.isEmpty()) {
+                // Only scan if the library hasn't been loaded yet - rescanning (and rebuilding
+                // the whole ExoPlayer queue) on every mode switch is wasteful and resets
+                // playback position/track selection, which doesn't feel "seamless."
                 scanLocalAudioFiles()
             }
         } else {
@@ -223,12 +243,17 @@ class PlaybackService : Service() {
     fun toggleHostSource(useNotificationListener: Boolean) {
         if (hostUseNotificationHook.value == useNotificationListener) return
         hostUseNotificationHook.value = useNotificationListener
-        
+        prefs().edit().putBoolean("host_use_notification_hook", useNotificationListener).apply()
+
         if (useNotificationListener) {
             exoPlayer?.pause()
             broadcastHostStateToClient(includeMetadata = true)
-        } else {
+        } else if (_hostSongs.value.isEmpty()) {
             scanLocalAudioFiles()
+        } else {
+            // Library already loaded and ExoPlayer's queue was never touched while hooked -
+            // just resume broadcasting the current native state instead of reloading anything.
+            broadcastHostStateToClient(includeMetadata = true)
         }
         updateForegroundNotification()
     }
@@ -273,9 +298,11 @@ class PlaybackService : Service() {
 
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(idCol).toString()
-                        val title = cursor.getString(titleCol) ?: "Unknown Song"
-                        val artist = cursor.getString(artistCol) ?: "Unknown Artist"
-                        val album = cursor.getString(albumCol) ?: "Unknown Album"
+                        // Android's media scanner stores the literal string "<unknown>" (not
+                        // null) for untagged files, so a plain ?: fallback never catches it.
+                        val title = cursor.getString(titleCol).takeUnless { it.isNullOrBlank() || it == MediaStore.UNKNOWN_STRING } ?: "Unknown Song"
+                        val artist = cursor.getString(artistCol).takeUnless { it.isNullOrBlank() || it == MediaStore.UNKNOWN_STRING } ?: "Unknown Artist"
+                        val album = cursor.getString(albumCol).takeUnless { it.isNullOrBlank() || it == MediaStore.UNKNOWN_STRING } ?: "Unknown Album"
                         val duration = cursor.getLong(durationCol)
                         val albumId = cursor.getLong(albumIdCol)
 
@@ -985,7 +1012,16 @@ class PlaybackService : Service() {
                 val artist = song?.artist ?: "Offline Host"
                 val isPlaying = player?.isPlaying ?: false
                 
-                val bitmap = if (song != null) getLocalAlbumArtBitmap(applicationContext, song.albumArtUri) else null
+                val bitmap = if (song != null) {
+                    if (song.id == lastNotifLocalSongId && lastNotifLocalBitmap != null) {
+                        lastNotifLocalBitmap
+                    } else {
+                        getLocalAlbumArtBitmap(applicationContext, song.albumArtUri).also {
+                            lastNotifLocalSongId = song.id
+                            lastNotifLocalBitmap = it
+                        }
+                    }
+                } else null
                 return SimpleTrackInfo(title, artist, isPlaying, bitmap)
             }
         } else {
@@ -993,17 +1029,25 @@ class PlaybackService : Service() {
             val title = state?.currentTitle ?: "Bridge Idle"
             val artist = state?.currentArtist ?: "Select Host Source"
             val isPlaying = state?.status == "PLAYING"
-            
-            val bitmap = state?.currentAlbumArt?.let { base64 ->
-                if (base64.startsWith("data:image")) {
-                    try {
-                        val clean = base64.substringAfter("base64,")
-                        val bytes = android.util.Base64.decode(clean, android.util.Base64.DEFAULT)
-                        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    } catch (e: Exception) {
-                        null
-                    }
-                } else null
+
+            val artKey = state?.currentAlbumArt
+            val bitmap = if (artKey == lastNotifClientArtKey) {
+                lastNotifClientBitmap
+            } else {
+                val decoded = artKey?.let { base64 ->
+                    if (base64.startsWith("data:image")) {
+                        try {
+                            val clean = base64.substringAfter("base64,")
+                            val bytes = android.util.Base64.decode(clean, android.util.Base64.DEFAULT)
+                            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                        } catch (e: Exception) {
+                            null
+                        }
+                    } else null
+                }
+                lastNotifClientArtKey = artKey
+                lastNotifClientBitmap = decoded
+                decoded
             }
             return SimpleTrackInfo(title, artist, isPlaying, bitmap)
         }
