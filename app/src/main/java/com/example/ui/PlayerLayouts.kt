@@ -1,6 +1,7 @@
 package com.example.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,13 +12,18 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.flow.StateFlow
 
 /** Tall-screen orientation: header, connection status, and a scrollable now-playing card
- * followed by the queue, stacked vertically. */
+ * followed by the queue, stacked vertically. Scrolling the queue collapses the now-playing
+ * card into a compact [MiniPlayerBar] so browsing songs isn't fighting it for space. */
 @Composable
 fun PortraitPlayerLayout(
     state: PlayerUiState,
@@ -26,6 +32,13 @@ fun PortraitPlayerLayout(
     positionFlow: StateFlow<Long>,
     modifier: Modifier = Modifier
 ) {
+    val queueListState = rememberLazyListState()
+    val isCollapsed by remember {
+        derivedStateOf {
+            queueListState.firstVisibleItemIndex > 0 || queueListState.firstVisibleItemScrollOffset > 80
+        }
+    }
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -49,7 +62,7 @@ fun PortraitPlayerLayout(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
         )
 
-        AnimatedVisibility(visible = state.isHostMode) {
+        AnimatedVisibility(visible = state.isHostMode && !isCollapsed) {
             SourceToggleRow(
                 useNotificationHook = state.hostUseNotificationHook,
                 onToggle = actions.onToggleSource,
@@ -57,21 +70,32 @@ fun PortraitPlayerLayout(
             )
         }
 
-        // Fixed natural height, never weighted/clipped - the play/pause button and the rest
-        // of the transport controls must always render in full, never get scrolled out of
-        // view or clipped by a height budget that doesn't fit the content.
-        NowPlayingCard(
-            state = state,
-            actions = actions,
-            compact = compact,
-            positionFlow = positionFlow,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-        )
+        Crossfade(targetState = isCollapsed, label = "nowPlayingCollapse") { collapsed ->
+            if (collapsed) {
+                MiniPlayerBar(
+                    state = state,
+                    actions = actions,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            } else {
+                // Fixed natural height, never weighted/clipped - the play/pause button and
+                // the rest of the transport controls must always render in full, never get
+                // scrolled out of view or clipped by a height budget that doesn't fit.
+                NowPlayingCard(
+                    state = state,
+                    actions = actions,
+                    compact = compact,
+                    positionFlow = positionFlow,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+        }
 
         QueueSection(
             state = state,
             actions = actions,
             compact = false,
+            listState = queueListState,
             modifier = Modifier
                 .weight(1f)
                 .padding(horizontal = 16.dp, vertical = 4.dp)

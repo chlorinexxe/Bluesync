@@ -57,16 +57,10 @@ class MainViewModel : ViewModel() {
                         if (activeService.hostUseNotificationHook.value) {
                             val controller = MyNotificationListener.getActiveController()
                             val pb = controller?.playbackState
-                            if (pb != null) {
-                                if (pb.state == android.media.session.PlaybackState.STATE_PLAYING && pb.lastPositionUpdateTime > 0) {
-                                    val diff = android.os.SystemClock.elapsedRealtime() - pb.lastPositionUpdateTime
-                                    val speed = if (pb.playbackSpeed > 0f) pb.playbackSpeed else 1.0f
-                                    _currentPlaybackPosition.value = pb.position + (diff * speed).toLong()
-                                } else {
-                                    _currentPlaybackPosition.value = pb.position
-                                }
+                            _currentPlaybackPosition.value = if (pb != null) {
+                                MyNotificationListener.estimatePosition(pb)
                             } else {
-                                _currentPlaybackPosition.value = 0L
+                                0L
                             }
                         } else {
                             _currentPlaybackPosition.value = activeService.exoPlayer?.currentPosition ?: 0L
@@ -152,6 +146,14 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    /** Live role swap while connected - tells the peer to flip roles too and flips locally,
+     * without touching the underlying connection at all. */
+    fun swapRoles() {
+        val s = _service.value ?: return
+        s.swapRoles()
+        _currentPlaybackPosition.value = 0L
+    }
+
     fun toggleHostSource(useNotificationListener: Boolean) {
         val s = _service.value ?: return
         s.toggleHostSource(useNotificationListener)
@@ -202,6 +204,19 @@ class MainViewModel : ViewModel() {
         val s = _service.value ?: return
         s.bluetoothEngine.setUserDisconnected()
         s.bluetoothEngine.cleanup(explicit = true)
+    }
+
+    /** Client-side: ask the host for the next chunk of its library as the queue list is
+     * scrolled, instead of ever sending/holding the whole thing at once over Bluetooth. Only
+     * meaningful when the host is in native-library mode - a notification-hooked host has no
+     * "full library" to page through, and silently won't respond. */
+    fun requestMoreSongs() {
+        val s = _service.value ?: return
+        if (s.isHostMode.value) return
+        // Matches what's actually shown (preview + everything paginated in so far), or we'd
+        // either re-request the same range or skip over some of it.
+        val currentCount = s.clientSongs.value.size + s.clientLibraryPages.value.size
+        s.bluetoothEngine.sendCommand(BluetoothCommand("REQUEST_LIBRARY_PAGE", index = currentCount))
     }
 
     fun playSongWithId(songId: String, index: Int) {

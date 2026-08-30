@@ -39,5 +39,9 @@ data class BluetoothStateUpdate(
     val maxVolume: Int? = null,
     val currentVolume: Int? = null,
     val shuffleActive: Boolean? = null,
-    val repeatActive: String? = null // "OFF", "ALL", "ONE"
+    val repeatActive: String? = null, // "OFF", "ALL", "ONE"
+    // When true, `songs` is one page of the host's full library (requested via
+    // REQUEST_LIBRARY_PAGE as the client scrolls) and should be appended to what the client
+    // already has, rather than replacing the regular "up next" preview.
+    val isLibraryPage: Boolean = false
 )

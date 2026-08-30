@@ -10,6 +10,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
+import android.os.PowerManager
 import android.util.Log
 import com.example.model.BluetoothCommand
 import com.example.model.BluetoothStateUpdate
@@ -217,9 +218,40 @@ class BluetoothConnectionEngine(private val context: Context) {
     // call site to remember to.
     private fun updateConnectionState(state: BluetoothConnectionState) {
         _connectionState.value = state
+        if (state == BluetoothConnectionState.CONNECTED) {
+            acquireConnectionWakeLock()
+        } else {
+            releaseConnectionWakeLock()
+        }
         scope.launch(Dispatchers.Main) {
             onConnectionStateChanged?.invoke(state)
         }
+    }
+
+    // Held only while actively connected, so the screen turning off doesn't let the CPU sleep
+    // through the blocking socket read that keeps the connection alive - the whole point of
+    // "stay connected to the other phone as much as possible."
+    private var wakeLock: PowerManager.WakeLock? = null
+
+    @SuppressLint("WakelockTimeout")
+    private fun acquireConnectionWakeLock() {
+        if (wakeLock?.isHeld == true) return
+        try {
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "BlueSync:connection")
+            wakeLock?.acquire()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to acquire connection wake lock", e)
+        }
+    }
+
+    private fun releaseConnectionWakeLock() {
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to release connection wake lock", e)
+        }
+        wakeLock = null
     }
 
     @SuppressLint("MissingPermission")
@@ -344,30 +376,40 @@ class BluetoothConnectionEngine(private val context: Context) {
 
                 while (connectionState.value == BluetoothConnectionState.CONNECTED) {
                     val line = reader?.readLine() ?: break // socket closed
-                    
-                    if (isHost) {
-                        try {
-                            val cmd = commandAdapter.fromJson(line)
-                            if (cmd != null && cmd.command != "PING") {
-                                Log.d(TAG, "Received raw line: $line")
-                                withContext(Dispatchers.Main) {
-                                    onCommandReceived?.invoke(cmd)
-                                }
+
+                    // Dispatch by content rather than trusting the fixed role this socket was
+                    // originally set up with (RFCOMM server-accepted vs client-connected never
+                    // changes for the lifetime of the socket). This is what makes live role
+                    // swapping possible - after a swap, this device's *application* role
+                    // flips, but the same physical connection needs to keep working in
+                    // whichever direction the data actually flows now. A BluetoothCommand JSON
+                    // is missing BluetoothStateUpdate's required fields and vice versa, so
+                    // trying the "wrong" shape reliably fails to parse rather than silently
+                    // producing garbage.
+                    val cmd = try {
+                        commandAdapter.fromJson(line)
+                    } catch (e: Exception) {
+                        null
+                    }
+                    if (cmd != null) {
+                        if (cmd.command != "PING") {
+                            Log.d(TAG, "Received raw line: $line")
+                            withContext(Dispatchers.Main) {
+                                onCommandReceived?.invoke(cmd)
                             }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to parse command payload: $line", e)
                         }
-                    } else {
-                        try {
-                            val stateUpdate = updateAdapter.fromJson(line)
-                            if (stateUpdate != null) {
-                                withContext(Dispatchers.Main) {
-                                    onStateReceived?.invoke(stateUpdate)
-                                }
+                        continue
+                    }
+
+                    try {
+                        val stateUpdate = updateAdapter.fromJson(line)
+                        if (stateUpdate != null) {
+                            withContext(Dispatchers.Main) {
+                                onStateReceived?.invoke(stateUpdate)
                             }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to parse state update payload: $line", e)
                         }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to parse state update payload: $line", e)
                     }
                 }
             } catch (e: IOException) {
@@ -469,6 +511,7 @@ class BluetoothConnectionEngine(private val context: Context) {
             userIntentDisconnected = true
             autoReconnectJob?.cancel()
         }
+        releaseConnectionWakeLock()
         heartbeatJob?.cancel()
         heartbeatJob = null
         stopDeviceDiscovery()

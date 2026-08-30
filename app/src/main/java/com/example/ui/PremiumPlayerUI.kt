@@ -66,7 +66,8 @@ fun PremiumPlayerUI(
     val currentTrackIndex by (service?.currentTrackIndex ?: MutableStateFlow(0)).collectAsState()
     val localSongs by (service?.hostSongs ?: MutableStateFlow(emptyList())).collectAsState()
     val hostNotificationSongs by (service?.hostNotificationSongs ?: MutableStateFlow(emptyList())).collectAsState()
-    val clientSongs by (service?.clientSongs ?: MutableStateFlow(emptyList())).collectAsState()
+    val clientSongsPreview by (service?.clientSongs ?: MutableStateFlow(emptyList())).collectAsState()
+    val clientLibraryPages by (service?.clientLibraryPages ?: MutableStateFlow(emptyList())).collectAsState()
     val clientState by (service?.clientPlaybackState ?: MutableStateFlow(null)).collectAsState()
 
     var showScanSheet by remember { mutableStateOf(false) }
@@ -225,7 +226,10 @@ fun PremiumPlayerUI(
     val displaySongs = if (isHostMode) {
         if (hostUseNotificationHook) hostNotificationSongs else localSongs
     } else {
-        clientSongs
+        // The regular "up next" preview first, then whatever's been paginated in by scrolling
+        // - kept as two separate flows upstream so a metadata sync mid-scroll can't wipe the
+        // paginated part back down to just the preview.
+        clientSongsPreview + clientLibraryPages
     }
 
     val activeQueueIndex = if (isHostMode) currentTrackIndex else (clientState?.currentIndex ?: -1)
@@ -262,6 +266,24 @@ fun PremiumPlayerUI(
         permissionLauncher.launch(perms.toTypedArray())
     }
 
+    // Best-effort request to survive OEM battery-optimization killers while the screen is off
+    // and the app is backgrounded - the foreground service + connection wake lock handle the
+    // rest. Shown once per app open, not nagged on every recomposition.
+    LaunchedEffect(Unit) {
+        try {
+            val powerManager = context.getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            if (!powerManager.isIgnoringBatteryOptimizations(context.packageName)) {
+                context.startActivity(
+                    Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = android.net.Uri.parse("package:${context.packageName}")
+                    }
+                )
+            }
+        } catch (e: Exception) {
+            // Some OEMs restrict this intent entirely - not fatal, just skip it.
+        }
+    }
+
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
     val isCompact = isLandscape || configuration.screenHeightDp < 780
@@ -294,9 +316,18 @@ fun PremiumPlayerUI(
             hookAuthorized = hookAuthorized
         )
 
+        val isConnected = bluetoothState == com.example.bluetooth.BluetoothConnectionState.CONNECTED
         val actions = PlayerActions(
-            onSelectHostMode = { hapticDriver.triggerClick(); viewModel.toggleAppMode(true) },
-            onSelectClientMode = { hapticDriver.triggerClick(); viewModel.toggleAppMode(false) },
+            // While connected, switching the role you tap should swap live with the peer
+            // instead of yanking the connection out from under both phones.
+            onSelectHostMode = {
+                hapticDriver.triggerClick()
+                if (!isHostMode && isConnected) viewModel.swapRoles() else viewModel.toggleAppMode(true)
+            },
+            onSelectClientMode = {
+                hapticDriver.triggerClick()
+                if (isHostMode && isConnected) viewModel.swapRoles() else viewModel.toggleAppMode(false)
+            },
             onToggleSource = { hook -> hapticDriver.triggerClick(); viewModel.toggleHostSource(hook) },
             onStartHostServer = { hapticDriver.triggerClick(); viewModel.startBluetoothHostServer() },
             onDisconnect = { hapticDriver.triggerClick(); viewModel.disconnectBluetooth() },
@@ -318,7 +349,8 @@ fun PremiumPlayerUI(
                 android.widget.Toast.makeText(context, "Find \"BlueSync Player\" in the list and turn it on", android.widget.Toast.LENGTH_LONG).show()
                 context.startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
             },
-            onSelectSong = { song, idx -> hapticDriver.triggerClick(); viewModel.playSongWithId(song.id, idx) }
+            onSelectSong = { song, idx -> hapticDriver.triggerClick(); viewModel.playSongWithId(song.id, idx) },
+            onLoadMoreSongs = { viewModel.requestMoreSongs() }
         )
 
         if (isLandscape) {

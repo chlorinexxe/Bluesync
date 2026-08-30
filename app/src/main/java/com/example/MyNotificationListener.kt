@@ -48,12 +48,44 @@ class MyNotificationListener : NotificationListenerService() {
 
     companion object {
         private var instance: MyNotificationListener? = null
-        
+
         // Listener callback for the binder/VM
         var onDataChangedListener: (() -> Unit)? = null
 
+        // Right after we call seekTo() on a hooked third-party session, its own PlaybackState
+        // (position/lastPositionUpdateTime) is still stale until the app gets around to
+        // reporting the new position - which can take a moment. Position estimation would
+        // otherwise snap back to the pre-seek value for that window, which looks exactly like
+        // "seeking doesn't work." Track the seek we issued and prefer our own optimistic
+        // estimate until the app's own state actually catches up (or a grace period elapses).
+        @Volatile private var pendingSeekPosition: Long? = null
+        @Volatile private var pendingSeekSetAtRealtime: Long = 0L
+        private const val SEEK_GRACE_MS = 2500L
+
         fun getActiveController(): MediaController? {
             return instance?.currentController
+        }
+
+        /** Estimated current playback position for a hooked controller's PlaybackState,
+         * accounting for a just-issued local seek that the app hasn't confirmed yet. */
+        fun estimatePosition(playbackState: PlaybackState?): Long {
+            val pb = playbackState ?: return 0L
+            val pending = pendingSeekPosition
+            if (pending != null) {
+                val now = android.os.SystemClock.elapsedRealtime()
+                val elapsedSincePending = now - pendingSeekSetAtRealtime
+                if (elapsedSincePending < SEEK_GRACE_MS && pb.lastPositionUpdateTime < pendingSeekSetAtRealtime) {
+                    return if (pb.state == PlaybackState.STATE_PLAYING) pending + elapsedSincePending else pending
+                }
+                pendingSeekPosition = null
+            }
+            return if (pb.state == PlaybackState.STATE_PLAYING && pb.lastPositionUpdateTime > 0) {
+                val diff = android.os.SystemClock.elapsedRealtime() - pb.lastPositionUpdateTime
+                val speed = if (pb.playbackSpeed > 0f) pb.playbackSpeed else 1.0f
+                pb.position + (diff * speed).toLong()
+            } else {
+                pb.position
+            }
         }
 
         fun executeCommand(command: String, index: Int? = null, itemId: String? = null, seekPosition: Long? = null) {
@@ -84,7 +116,11 @@ class MyNotificationListener : NotificationListenerService() {
                     "RESUME" -> controls.play()
                     "NEXT" -> controls.skipToNext()
                     "PREV" -> controls.skipToPrevious()
-                    "SEEK" -> seekPosition?.let { controls.seekTo(it) }
+                    "SEEK" -> seekPosition?.let {
+                        controls.seekTo(it)
+                        pendingSeekPosition = it
+                        pendingSeekSetAtRealtime = android.os.SystemClock.elapsedRealtime()
+                    }
                     "TOGGLE_SHUFFLE" -> {
                         val currentShuffle = try {
                             val method = controller.javaClass.getMethod("getShuffleMode")

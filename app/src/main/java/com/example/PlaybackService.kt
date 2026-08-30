@@ -36,6 +36,10 @@ import kotlinx.coroutines.withContext
 private const val TAG = "PlaybackService"
 private const val NOTIFICATION_ID = 2026
 private const val CHANNEL_ID = "bluesync_playback_channel"
+// Notification-hook mode has no real pagination available (a third-party app's exposed queue
+// is whatever small window it chooses to report, not a browsable "full library"), so its "up
+// next" preview is sized generously up front rather than artificially capped at 5.
+private const val UP_NEXT_PREVIEW_SIZE = 20
 
 class PlaybackService : Service() {
 
@@ -64,9 +68,17 @@ class PlaybackService : Service() {
     private val _hostSongs = MutableStateFlow<List<Song>>(emptyList())
     val hostSongs = _hostSongs.asStateFlow()
 
-    // Client Synchronized List
+    // Client Synchronized List - the host's regular "up next" preview, replaced wholesale on
+    // every metadata sync (which can fire quite often in notification-hook mode).
     private val _clientSongs = MutableStateFlow<List<Song>>(emptyList())
     val clientSongs = _clientSongs.asStateFlow()
+
+    // Separate accumulator for library pages fetched by scrolling, so a regular metadata sync
+    // arriving mid-scroll can't wipe out what's been paginated in - these two lists used to
+    // share one field, which caused a real bug: any sync would reset it to 5 items, which
+    // re-triggered "near the bottom, load more," which got wiped again next sync, forever.
+    private val _clientLibraryPages = MutableStateFlow<List<Song>>(emptyList())
+    val clientLibraryPages = _clientLibraryPages.asStateFlow()
 
     private val _hostNotificationSongs = MutableStateFlow<List<Song>>(emptyList())
     val hostNotificationSongs = _hostNotificationSongs.asStateFlow()
@@ -218,10 +230,28 @@ class PlaybackService : Service() {
 
     fun toggleAppMode(host: Boolean) {
         if (isHostMode.value == host) return
+        bluetoothEngine.cleanup()
+        applyModeChange(host)
+    }
+
+    /** User-initiated live role swap while connected: tells the peer to flip roles too, then
+     * flips locally - the socket connection itself is left completely alone. */
+    fun swapRoles() {
+        if (bluetoothEngine.connectionState.value != BluetoothConnectionState.CONNECTED) return
+        bluetoothEngine.sendCommand(BluetoothCommand("ROLE_SWAP_REQUEST"))
+        applyRoleSwap()
+    }
+
+    /** Applies a role swap requested by the peer - same effect as [swapRoles] but without
+     * re-sending the request (that would just bounce back and forth forever). */
+    fun applyRoleSwap() {
+        applyModeChange(!isHostMode.value)
+    }
+
+    private fun applyModeChange(host: Boolean) {
         isHostMode.value = host
         prefs().edit().putBoolean("is_host_mode", host).apply()
-        bluetoothEngine.cleanup()
-        
+
         if (host) {
             exoPlayer?.pause()
             if (hostUseNotificationHook.value) {
@@ -231,10 +261,13 @@ class PlaybackService : Service() {
                 // the whole ExoPlayer queue) on every mode switch is wasteful and resets
                 // playback position/track selection, which doesn't feel "seamless."
                 scanLocalAudioFiles()
+            } else {
+                broadcastHostStateToClient(includeMetadata = true)
             }
         } else {
             exoPlayer?.pause()
             _clientSongs.value = emptyList()
+            _clientLibraryPages.value = emptyList()
             _clientPlaybackState.value = null
         }
         updateForegroundNotification()
@@ -380,17 +413,32 @@ class PlaybackService : Service() {
 
     private fun setupBluetoothEngineCallbacks() {
         bluetoothEngine.onCommandReceived = { cmd ->
-            if (isHostMode.value) {
+            if (cmd.command == "ROLE_SWAP_REQUEST") {
+                // The peer just flipped their role and expects us to flip to match - apply
+                // locally without re-sending the request (that would just bounce back and
+                // forth forever).
+                applyRoleSwap()
+            } else if (isHostMode.value) {
                 handleClientCommand(cmd)
             }
         }
 
         bluetoothEngine.onStateReceived = { stateUpdate ->
-            if (!isHostMode.value) {
+            if (!isHostMode.value && stateUpdate.isLibraryPage) {
+                // A page of the host's full library requested via scrolling - append to the
+                // separate page accumulator, don't touch the regular preview, and leave
+                // now-playing info alone entirely (this message carries none of substance for
+                // it).
+                val existingIds = (_clientSongs.value + _clientLibraryPages.value).mapTo(HashSet()) { it.id }
+                val newSongs = stateUpdate.songs.orEmpty().filter { it.id !in existingIds }
+                if (newSongs.isNotEmpty()) {
+                    _clientLibraryPages.value = _clientLibraryPages.value + newSongs
+                }
+            } else if (!isHostMode.value) {
                 stateUpdate.songs?.let { remoteSongs ->
                     _clientSongs.value = remoteSongs
                 }
-                
+
                 val previousState = _clientPlaybackState.value
                 val mergedState = if (previousState != null) {
                     BluetoothStateUpdate(
@@ -412,7 +460,7 @@ class PlaybackService : Service() {
                 } else {
                     stateUpdate
                 }
-                
+
                 _clientPlaybackState.value = mergedState
                 updateForegroundNotification()
             }
@@ -445,6 +493,11 @@ class PlaybackService : Service() {
                     }
                     broadcastHostStateToClient()
                 }
+                return@launch
+            }
+
+            if (cmd.command == "REQUEST_LIBRARY_PAGE") {
+                sendLibraryPage(cmd.index ?: 0)
                 return@launch
             }
 
@@ -597,7 +650,7 @@ class PlaybackService : Service() {
                             val songsList = mutableListOf<Song>()
                             if (queueItems != null && queueItems.isNotEmpty()) {
                                 val startIndex = (matchedIdx + 1) % queueItems.size
-                                for (i in 0 until 5) {
+                                for (i in 0 until minOf(UP_NEXT_PREVIEW_SIZE, queueItems.size)) {
                                     val qIdx = (startIndex + i) % queueItems.size
                                     val qItem = queueItems[qIdx]
                                     val itemTitle = qItem.description.title?.toString() ?: "Queue Track"
@@ -632,7 +685,7 @@ class PlaybackService : Service() {
                                     if (matchedNativeIdx == -1) matchedNativeIdx = 0
 
                                     val startIndex = (matchedNativeIdx + 1) % nativeSongs.size
-                                    for (i in 0 until 5) {
+                                    for (i in 0 until minOf(UP_NEXT_PREVIEW_SIZE, nativeSongs.size)) {
                                         val nIdx = (startIndex + i) % nativeSongs.size
                                         val songItem = nativeSongs[nIdx]
 
@@ -686,15 +739,11 @@ class PlaybackService : Service() {
                             }
                         } else null
 
-                        val exactElapsedTime = playbackState?.let { pb ->
-                            if (pb.state == PlaybackState.STATE_PLAYING && pb.lastPositionUpdateTime > 0) {
-                                val diff = android.os.SystemClock.elapsedRealtime() - pb.lastPositionUpdateTime
-                                val speed = if (pb.playbackSpeed > 0f) pb.playbackSpeed else 1.0f
-                                pb.position + (diff * speed).toLong()
-                            } else {
-                                pb.position
-                            }
-                        } ?: 0L
+                        // Shares MyNotificationListener's pending-seek grace window so a client
+                        // that just sent a SEEK command doesn't see the host immediately
+                        // broadcast back a stale pre-seek position while the hooked app is
+                        // still catching up.
+                        val exactElapsedTime = MyNotificationListener.estimatePosition(playbackState)
 
                         val queueItems = controller.queue
                         var matchedIdx = 0
@@ -757,13 +806,15 @@ class PlaybackService : Service() {
                             } else null
                         } else null
 
-                        // Construct next 5 upcoming tracks for client only if requested
+                        // Construct upcoming tracks for the client's initial preview only if
+                        // requested - scrolling further than this pages in more via
+                        // REQUEST_LIBRARY_PAGE rather than sending the whole library up front.
                         val nextSongsToSend = if (includeMetadata) {
                             val songsList = mutableListOf<Song>()
                             val nativeSongs = _hostSongs.value
                             if (nativeSongs.isNotEmpty()) {
                                 val startIndex = (idx + 1) % nativeSongs.size
-                                for (i in 0 until 5) {
+                                for (i in 0 until minOf(UP_NEXT_PREVIEW_SIZE, nativeSongs.size)) {
                                     val nIdx = (startIndex + i) % nativeSongs.size
                                     val songItem = nativeSongs[nIdx]
 
@@ -830,6 +881,54 @@ class PlaybackService : Service() {
                 }
 
                 bluetoothEngine.sendStateUpdate(update)
+            }
+        }
+    }
+
+    /** Sends one chunk of the native library to the client as it scrolls, instead of ever
+     * holding/transmitting the whole thing at once over a fairly slow classic-Bluetooth link.
+     * Only meaningful for the native library - a notification-hooked third-party app doesn't
+     * expose a "full library" for us to page through, only whatever small queue window it
+     * chooses to report, so this is a no-op in hook mode. */
+    private fun sendLibraryPage(offset: Int) {
+        if (hostUseNotificationHook.value) return
+        scope.launch(Dispatchers.Main) {
+            val allSongs = _hostSongs.value
+            if (offset < 0 || offset >= allSongs.size) return@launch
+            val pageSize = 30
+            val pageSource = allSongs.subList(offset, minOf(offset + pageSize, allSongs.size))
+
+            val page = withContext(Dispatchers.IO) {
+                pageSource.map { song ->
+                    var smallArt = cachedSmallAlbumArt[song.id]
+                    if (smallArt == null && song.albumArtUri != null) {
+                        try {
+                            val bitmap = getLocalAlbumArtBitmap(applicationContext, song.albumArtUri)
+                            if (bitmap != null) {
+                                smallArt = getSmallBase64AlbumArt(bitmap)
+                                if (!smallArt.isNullOrEmpty()) {
+                                    cachedSmallAlbumArt[song.id] = smallArt
+                                }
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Fail to get library page art", e)
+                        }
+                    }
+                    song.copy(uriString = "", albumArtUri = smallArt)
+                }
+            }
+
+            withContext(Dispatchers.IO) {
+                bluetoothEngine.sendStateUpdate(
+                    BluetoothStateUpdate(
+                        status = "IDLE",
+                        currentIndex = 0,
+                        elapsedTime = 0,
+                        duration = 0,
+                        songs = page,
+                        isLibraryPage = true
+                    )
+                )
             }
         }
     }

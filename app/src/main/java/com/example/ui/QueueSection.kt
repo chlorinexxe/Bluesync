@@ -15,7 +15,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.LockOpen
@@ -25,7 +27,12 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,7 +51,8 @@ fun QueueSection(
     state: PlayerUiState,
     actions: PlayerActions,
     compact: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    listState: LazyListState = rememberLazyListState()
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
         Text(
@@ -68,7 +76,7 @@ fun QueueSection(
             when {
                 needsHookAccess -> HookAccessPrompt(authorized = state.hookAuthorized, compact = compact, onGrantAccess = actions.onGrantHookAccess)
                 state.displaySongs.isEmpty() -> EmptyQueueMessage(isHostMode = state.isHostMode, compact = compact)
-                else -> QueueList(state = state, actions = actions, compact = compact)
+                else -> QueueList(state = state, actions = actions, compact = compact, listState = listState)
             }
         }
     }
@@ -143,8 +151,30 @@ private fun EmptyQueueMessage(isHostMode: Boolean, compact: Boolean) {
 }
 
 @Composable
-private fun QueueList(state: PlayerUiState, actions: PlayerActions, compact: Boolean) {
+private fun QueueList(state: PlayerUiState, actions: PlayerActions, compact: Boolean, listState: LazyListState) {
+    // Only the remote side has anything to page in - the host already holds its whole library
+    // in memory locally, nothing to fetch over the wire for itself.
+    if (!state.isHostMode) {
+        // Guards against re-firing for a size we already requested - belt-and-suspenders on
+        // top of keeping paginated songs in a separate accumulator (see PlaybackService).
+        // Without this, a host that's slow to respond (or that never grows the list for some
+        // other reason) would have this re-fire on every recomposition at the same size,
+        // which is exactly the runaway request loop this was built to prevent.
+        var lastRequestedSize by remember { mutableStateOf(-1) }
+        LaunchedEffect(listState, state.displaySongs.size) {
+            snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index }
+                .collect { lastVisibleIndex ->
+                    val size = state.displaySongs.size
+                    if (lastVisibleIndex != null && lastVisibleIndex >= size - 5 && size != lastRequestedSize) {
+                        lastRequestedSize = size
+                        actions.onLoadMoreSongs()
+                    }
+                }
+        }
+    }
+
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(if (compact) 6.dp else 12.dp),
         verticalArrangement = Arrangement.spacedBy(if (compact) 4.dp else 6.dp)

@@ -48,5 +48,6 @@ data class PlayerActions(
     val onSeek: (Long) -> Unit,
     val onVolumeChange: (Int) -> Unit,
     val onGrantHookAccess: () -> Unit,
-    val onSelectSong: (Song, Int) -> Unit
+    val onSelectSong: (Song, Int) -> Unit,
+    val onLoadMoreSongs: () -> Unit
 )

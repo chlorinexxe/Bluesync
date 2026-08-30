@@ -101,6 +101,79 @@ fun NowPlayingCard(
     }
 }
 
+/** Compact stand-in for [NowPlayingCard] shown once the queue list has been scrolled past it,
+ * so browsing songs isn't fighting the full card for vertical space - just enough to see
+ * what's playing and keep transport control one tap away. */
+@Composable
+fun MiniPlayerBar(state: PlayerUiState, actions: PlayerActions, modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(GlassSurface)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color.White.copy(alpha = 0.05f)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (state.trackArtUri != null) {
+                AsyncImage(
+                    model = state.trackArtUri,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Icon(
+                    imageVector = if (state.hostUseNotificationHook) Icons.Rounded.WifiTethering else Icons.Rounded.Headphones,
+                    contentDescription = null,
+                    tint = state.accentColor,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = state.trackTitle,
+                color = PureWhite,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = state.trackArtist,
+                color = Color.LightGray.copy(alpha = 0.6f),
+                fontSize = 11.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        IconButton(onClick = actions.onPlayPause, modifier = Modifier.size(36.dp)) {
+            Icon(
+                imageVector = if (state.isPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow,
+                contentDescription = "Play or pause",
+                tint = state.accentColor,
+                modifier = Modifier.size(22.dp)
+            )
+        }
+        IconButton(onClick = actions.onNext, modifier = Modifier.size(36.dp)) {
+            Icon(Icons.Rounded.SkipNext, contentDescription = "Next", tint = PureWhite, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
 @Composable
 private fun AlbumArt(state: PlayerUiState, compact: Boolean) {
     val size = if (compact) 84.dp else 132.dp
