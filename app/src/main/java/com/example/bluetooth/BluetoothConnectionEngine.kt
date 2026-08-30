@@ -153,24 +153,44 @@ class BluetoothConnectionEngine(private val context: Context) {
                 addAction(BluetoothDevice.ACTION_FOUND)
                 addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
             }
-            context.registerReceiver(discoveryReceiver, filter)
+            // On API 33+, registerReceiver requires an explicit exported flag or it throws.
+            // These are system broadcasts (BluetoothDevice/BluetoothAdapter actions), so they
+            // must never be receivable from other apps -> NOT_EXPORTED. ContextCompat provides
+            // the same call down to API 24 without manual SDK branching.
+            androidx.core.content.ContextCompat.registerReceiver(
+                context,
+                discoveryReceiver,
+                filter,
+                androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED
+            )
             receiverRegistered = true
         }
 
         _discoveredDevices.value = emptyList()
         _isScanning.value = true
 
-        if (bluetoothAdapter.isDiscovering) {
-            bluetoothAdapter.cancelDiscovery()
+        try {
+            if (bluetoothAdapter.isDiscovering) {
+                bluetoothAdapter.cancelDiscovery()
+            }
+            bluetoothAdapter.startDiscovery()
+            Log.d(TAG, "Initiated Active Bluetooth Scan")
+        } catch (e: Exception) {
+            // Permission can be revoked or the adapter can be toggled off between our check
+            // above and this call - don't let that race crash the app.
+            Log.e(TAG, "startDiscovery failed", e)
+            _isScanning.value = false
         }
-        bluetoothAdapter.startDiscovery()
-        Log.d(TAG, "Initiated Active Bluetooth Scan")
     }
 
     @SuppressLint("MissingPermission")
     fun stopDeviceDiscovery() {
-        if (bluetoothAdapter?.isDiscovering == true) {
-            bluetoothAdapter.cancelDiscovery()
+        try {
+            if (bluetoothAdapter?.isDiscovering == true) {
+                bluetoothAdapter.cancelDiscovery()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "cancelDiscovery failed", e)
         }
         _isScanning.value = false
         unregisterReceiver()

@@ -108,6 +108,24 @@ class PlaybackService : Service() {
         val player = ExoPlayer.Builder(this).build().apply {
             repeatMode = Player.REPEAT_MODE_ALL
             addListener(object : Player.Listener {
+                override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                    Log.e(TAG, "ExoPlayer error on track index $currentMediaItemIndex, skipping", error)
+                    if (!hostUseNotificationHook.value) {
+                        val player = exoPlayer ?: return
+                        // Unplayable/corrupt file: move past it instead of leaving playback
+                        // stuck on a dead track. If it was the last item, just stop cleanly.
+                        if (player.hasNextMediaItem()) {
+                            player.seekToNextMediaItem()
+                            player.prepare()
+                            player.play()
+                        } else {
+                            player.pause()
+                        }
+                        broadcastHostStateToClient(includeMetadata = true)
+                        updateForegroundNotification()
+                    }
+                }
+
                 override fun onPlaybackStateChanged(state: Int) {
                     if (!hostUseNotificationHook.value) {
                         _currentTrackIndex.value = currentMediaItemIndex
@@ -478,7 +496,24 @@ class PlaybackService : Service() {
             withContext(Dispatchers.IO) {
                 val update = if (hostUseNotificationHook.value) {
                     val controller = MyNotificationListener.getActiveController()
-                    if (controller != null) {
+                    val idleFallback = BluetoothStateUpdate(
+                        status = "IDLE",
+                        currentIndex = 0,
+                        elapsedTime = 0,
+                        duration = 0,
+                        currentTitle = "No Active Player Connected",
+                        currentArtist = "Open Poweramp or local media app",
+                        songs = emptyList(),
+                        maxVolume = maxVol,
+                        currentVolume = currentVol,
+                        shuffleActive = false,
+                        repeatActive = "OFF"
+                    )
+                    // The hooked controller lives in another app's process. If that app is
+                    // killed by the OS (or its session dies) mid-read, these getters can throw
+                    // instead of just returning null - fall back to idle rather than crashing
+                    // the sync loop.
+                    if (controller != null) try {
                         val metadata = controller.metadata
                         val playbackState = controller.playbackState
 
@@ -655,20 +690,11 @@ class PlaybackService : Service() {
                             shuffleActive = isShuffle,
                             repeatActive = isRepeat
                         )
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Hooked controller read failed (session likely died mid-read)", e)
+                        idleFallback
                     } else {
-                        BluetoothStateUpdate(
-                            status = "IDLE",
-                            currentIndex = 0,
-                            elapsedTime = 0,
-                            duration = 0,
-                            currentTitle = "No Active Player Connected",
-                            currentArtist = "Open Poweramp or local media app",
-                            songs = emptyList(),
-                            maxVolume = maxVol,
-                            currentVolume = currentVol,
-                            shuffleActive = false,
-                            repeatActive = "OFF"
-                        )
+                        idleFallback
                     }
                 } else {
                     if (playerExists) {
@@ -809,8 +835,24 @@ class PlaybackService : Service() {
         if (uriStr == null) return null
         return try {
             val uri = Uri.parse(uriStr)
+            // Embedded album art can be several thousand pixels across; decoding it at full
+            // resolution before we scale it down to 160px (or 40px) risks OOM on low-RAM
+            // devices. Read the bounds first, then decode already-downsampled.
+            val boundsOptions = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
             context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                android.graphics.BitmapFactory.decodeStream(inputStream)
+                android.graphics.BitmapFactory.decodeStream(inputStream, null, boundsOptions)
+            }
+            val targetSize = 320
+            var sampleSize = 1
+            val halfWidth = boundsOptions.outWidth / 2
+            val halfHeight = boundsOptions.outHeight / 2
+            while (halfWidth / sampleSize >= targetSize || halfHeight / sampleSize >= targetSize) {
+                sampleSize *= 2
+            }
+
+            val decodeOptions = android.graphics.BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            context.contentResolver.openInputStream(uri)?.use { inputStream ->
+                android.graphics.BitmapFactory.decodeStream(inputStream, null, decodeOptions)
             }
         } catch (e: Exception) {
             null

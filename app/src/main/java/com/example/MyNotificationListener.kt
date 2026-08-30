@@ -187,9 +187,17 @@ class MyNotificationListener : NotificationListenerService() {
     }
 
     private fun updateActiveController(controllers: List<MediaController>?) {
-        // Try to bind target player or get the first relevant music playing app in focus
-        val newController = controllers?.firstOrNull()
-        
+        // Never hook our own session (Media3 registers one in PlaybackService) - otherwise
+        // BlueSync can end up "controlling itself" instead of the real third-party player.
+        val candidates = controllers?.filter { it.packageName != packageName } ?: emptyList()
+
+        // Prefer whichever session is actually playing (mirrors how the system picks the
+        // "active" media notification); fall back to the first remaining candidate so a
+        // paused-but-open player is still hooked when nothing else is playing.
+        val newController = candidates.firstOrNull { controller ->
+            controller.playbackState?.state == PlaybackState.STATE_PLAYING
+        } ?: candidates.firstOrNull()
+
         if (newController?.packageName != currentController?.packageName) {
             currentController?.unregisterCallback(controllerCallback)
             currentController = newController

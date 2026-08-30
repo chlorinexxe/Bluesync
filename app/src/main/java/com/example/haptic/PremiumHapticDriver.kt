@@ -15,9 +15,24 @@ class PremiumHapticDriver(private val context: Context) {
         context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
     }
 
+    // Composition primitives (PRIMITIVE_CLICK/TICK) require R, but hardware support is not
+    // guaranteed even then - a lot of Android 11/12 devices report hasVibrator()=true and
+    // silently no-op on unsupported primitives instead of throwing, which is why haptics can
+    // "do nothing" without ever hitting a catch block. Check real support before relying on it.
+    private val supportsPrimitives: Boolean by lazy {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && vibrator != null && try {
+            vibrator.areAllPrimitivesSupported(
+                VibrationEffect.Composition.PRIMITIVE_CLICK,
+                VibrationEffect.Composition.PRIMITIVE_TICK
+            )
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     fun triggerClick() {
         if (vibrator == null || !vibrator.hasVibrator()) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (supportsPrimitives) {
             try {
                 val effect = VibrationEffect.startComposition()
                     .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 0.9f)
@@ -33,11 +48,11 @@ class PremiumHapticDriver(private val context: Context) {
 
     fun triggerSkipPulse() {
         if (vibrator == null || !vibrator.hasVibrator()) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (supportsPrimitives) {
             try {
                 val effect = VibrationEffect.startComposition()
                     .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 0.4f, 0)
-                    .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 1.0f, 100)
+                    .addPrimitive(VibrationEffect.Composition.PRIMITIVE_CLICK, 0.75f, 100)
                     .compose()
                 vibrator.vibrate(effect)
             } catch (e: Exception) {
@@ -52,7 +67,7 @@ class PremiumHapticDriver(private val context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
                 val timings = longArrayOf(0, 15, 80, 45)
-                val amplitudes = intArrayOf(0, 70, 0, 240)
+                val amplitudes = intArrayOf(0, 60, 0, 130)
                 val effect = VibrationEffect.createWaveform(timings, amplitudes, -1)
                 vibrator?.vibrate(effect)
             } catch (e: Exception) {
@@ -65,7 +80,7 @@ class PremiumHapticDriver(private val context: Context) {
 
     fun triggerTick() {
         if (vibrator == null || !vibrator.hasVibrator()) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (supportsPrimitives) {
             try {
                 val effect = VibrationEffect.startComposition()
                     .addPrimitive(VibrationEffect.Composition.PRIMITIVE_TICK, 0.35f)
@@ -83,7 +98,9 @@ class PremiumHapticDriver(private val context: Context) {
         if (vibrator == null || !vibrator.hasVibrator()) return
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator.vibrate(VibrationEffect.createOneShot(durationMs, VibrationEffect.DEFAULT_AMPLITUDE))
+                // A soft nudge rather than DEFAULT_AMPLITUDE (max strength / 255) - devices
+                // without primitive support still shouldn't feel a hard buzz.
+                vibrator.vibrate(VibrationEffect.createOneShot(durationMs, 110))
             } else {
                 @Suppress("DEPRECATION")
                 vibrator.vibrate(durationMs)
