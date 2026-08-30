@@ -55,11 +55,20 @@ data class BluetoothStateUpdate(
  */
 @JsonClass(generateAdapter = true)
 data class SpeakerMessage(
-    val type: String, // "TRACK_HEADER", "SYNC", "JOINED", "LEFT"
+    val type: String, // "TRACK_HEADER", "SYNC", "WIFI_DIRECT_INFO"
     val songId: String? = null,
     val title: String? = null,
     val artist: String? = null,
     val totalBytes: Long? = null,
     val positionMs: Long? = null,
-    val isPlaying: Boolean? = null
+    val isPlaying: Boolean? = null,
+    // WIFI_DIRECT_INFO only: an ad-hoc WiFi group the host just stood up, sent as the very
+    // first message on a freshly-accepted Bluetooth speaker connection so the client can
+    // silently upgrade to a much faster transport with no shared network required. wifiHostIp
+    // is the host's actual address on that group's interface - not assumed/hardcoded, since the
+    // conventional "192.168.49.1" group-owner address isn't guaranteed, especially when the
+    // host is concurrently also connected to a regular WiFi network.
+    val wifiSsid: String? = null,
+    val wifiPassphrase: String? = null,
+    val wifiHostIp: String? = null
 )

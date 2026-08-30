@@ -1146,11 +1146,24 @@ class PlaybackService : Service() {
                 speakerSyncEngine.syncSignal.collect { signal ->
                     val (hostPosition, hostPlaying) = signal ?: return@collect
                     val player = speakerPlayer ?: return@collect
-                    if (speakerSyncEngine.isDrifted(player.currentPosition, hostPosition)) {
-                        player.seekTo(hostPosition)
-                    }
+
                     if (hostPlaying && !player.isPlaying) player.play()
                     if (!hostPlaying && player.isPlaying) player.pause()
+
+                    when (val correction = speakerSyncEngine.syncCorrectionFor(player.currentPosition, hostPosition)) {
+                        is com.example.bluetooth.SpeakerSyncEngine.SyncCorrection.HardSeek -> {
+                            player.seekTo(correction.toPositionMs)
+                            if (player.playbackParameters.speed != 1f) player.setPlaybackSpeed(1f)
+                        }
+                        is com.example.bluetooth.SpeakerSyncEngine.SyncCorrection.SpeedAdjust -> {
+                            if (player.playbackParameters.speed != correction.speed) {
+                                player.setPlaybackSpeed(correction.speed)
+                            }
+                        }
+                        is com.example.bluetooth.SpeakerSyncEngine.SyncCorrection.None -> {
+                            if (player.playbackParameters.speed != 1f) player.setPlaybackSpeed(1f)
+                        }
+                    }
                 }
             }
         }
