@@ -46,6 +46,15 @@ class WifiDirectGroupManager(private val context: Context) {
         val mgr = manager ?: return null
         val ch = channel ?: return null
 
+        // A group this app created earlier can outlive the process that created it - a
+        // force-stop, crash, or OEM background kill all skip onDestroy()/stopHosting(), and
+        // WiFi Direct groups live at the OS level, not tied to any app's lifecycle. A device
+        // that's since become a plain client but still secretly owns a leftover group of its
+        // own will then collide with itself (its own group's conventional 192.168.49.1 clashes
+        // with whatever it's trying to reach) the moment it tries to join someone else's group.
+        // Clearing first makes this robust regardless of how the previous group was abandoned.
+        removeGroup()
+
         val formed = suspendCancellableCoroutine<Boolean> { cont ->
             try {
                 mgr.createGroup(ch, object : WifiP2pManager.ActionListener {
@@ -117,16 +126,23 @@ class WifiDirectGroupManager(private val context: Context) {
         }
     }
 
+    /** Suspends until the removal actually completes (or fails/times out) rather than firing
+     * and forgetting - callers that immediately create a new group afterward need the old one
+     * actually gone first, not just a request in flight. */
     @SuppressLint("MissingPermission")
-    fun removeGroup() {
+    suspend fun removeGroup() {
         val mgr = manager ?: return
         val ch = channel ?: return
-        try {
-            mgr.removeGroup(ch, object : WifiP2pManager.ActionListener {
-                override fun onSuccess() { /* no-op */ }
-                override fun onFailure(reason: Int) { /* no-op */ }
-            })
-        } catch (e: Exception) { /* ignore */ }
+        suspendCancellableCoroutine<Unit> { cont ->
+            try {
+                mgr.removeGroup(ch, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() { if (cont.isActive) cont.resumeWith(Result.success(Unit)) }
+                    override fun onFailure(reason: Int) { if (cont.isActive) cont.resumeWith(Result.success(Unit)) }
+                })
+            } catch (e: Exception) {
+                if (cont.isActive) cont.resumeWith(Result.success(Unit))
+            }
+        }
     }
 
     /** Joins the given WiFi Direct group as a regular WiFi client and returns the [Network] to

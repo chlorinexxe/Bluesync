@@ -298,7 +298,7 @@ class SpeakerSyncEngine(private val context: Context) {
         wifiDirectGroupJob?.cancel()
         wifiDirectGroupJob = null
         if (wifiDirectCredentials != null) {
-            wifiDirectManager.removeGroup()
+            scope.launch { wifiDirectManager.removeGroup() }
             wifiDirectCredentials = null
         }
         for (conn in speakerConnections.values) {
