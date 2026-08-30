@@ -219,6 +219,16 @@ class MainViewModel : ViewModel() {
         s.bluetoothEngine.sendCommand(BluetoothCommand("REQUEST_LIBRARY_PAGE", index = currentCount))
     }
 
+    fun joinSpeakerMode() {
+        val s = _service.value ?: return
+        s.joinSpeakerMode()
+    }
+
+    fun leaveSpeakerMode() {
+        val s = _service.value ?: return
+        s.leaveSpeakerMode()
+    }
+
     fun playSongWithId(songId: String, index: Int) {
         val s = _service.value ?: return
         if (s.isHostMode.value) {

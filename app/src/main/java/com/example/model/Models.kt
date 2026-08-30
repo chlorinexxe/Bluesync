@@ -45,3 +45,21 @@ data class BluetoothStateUpdate(
     // already has, rather than replacing the regular "up next" preview.
     val isLibraryPage: Boolean = false
 )
+
+/**
+ * Control messages on the speaker channel (see SpeakerSyncEngine) - a completely separate
+ * RFCOMM connection from the main control channel, so speaker mode can't destabilize normal
+ * remote-control use. Framed with a 4-byte length prefix (not line-based JSON like
+ * BluetoothCommand/BluetoothStateUpdate) because this channel also carries raw audio bytes,
+ * which could otherwise be misread as line terminators.
+ */
+@JsonClass(generateAdapter = true)
+data class SpeakerMessage(
+    val type: String, // "TRACK_HEADER", "SYNC", "JOINED", "LEFT"
+    val songId: String? = null,
+    val title: String? = null,
+    val artist: String? = null,
+    val totalBytes: Long? = null,
+    val positionMs: Long? = null,
+    val isPlaying: Boolean? = null
+)

@@ -53,7 +53,15 @@ class PlaybackService : Service() {
         private set
     lateinit var bleDiscoveryEngine: com.example.bluetooth.BleDiscoveryEngine
         private set
+    lateinit var speakerSyncEngine: com.example.bluetooth.SpeakerSyncEngine
+        private set
     var mediaSession: androidx.media3.session.MediaSession? = null
+
+    // Dedicated player for "join as speaker" mode on the client side - kept entirely separate
+    // from the remote-control exoPlayer (which client mode doesn't otherwise use for
+    // playback) so speaker audio can't interfere with anything else.
+    private var speakerPlayer: ExoPlayer? = null
+    private var speakerJob: Job? = null
 
     companion object {
         const val ACTION_PLAY_PAUSE = "com.example.ACTION_PLAY_PAUSE"
@@ -129,6 +137,7 @@ class PlaybackService : Service() {
 
         bluetoothEngine = BluetoothConnectionEngine(applicationContext)
         bleDiscoveryEngine = com.example.bluetooth.BleDiscoveryEngine(applicationContext)
+        speakerSyncEngine = com.example.bluetooth.SpeakerSyncEngine(applicationContext)
         initializePlayer()
         setupBluetoothEngineCallbacks()
         createNotificationChannel()
@@ -136,6 +145,9 @@ class PlaybackService : Service() {
         // Beacon continuously so the other phone can find us in ~1s instead of waiting on a
         // classic 12s discovery cycle - cheap enough to leave running for the service lifetime.
         bleDiscoveryEngine.startAdvertising()
+        if (isHostMode.value) {
+            speakerSyncEngine.startHosting()
+        }
     }
 
     private fun initializePlayer() {
@@ -193,6 +205,7 @@ class PlaybackService : Service() {
                         _currentTrackIndex.value = currentMediaItemIndex
                         broadcastHostStateToClient(includeMetadata = true)
                         updateForegroundNotification()
+                        broadcastTrackToSpeakers()
                     }
                 }
 
@@ -254,6 +267,8 @@ class PlaybackService : Service() {
 
         if (host) {
             exoPlayer?.pause()
+            leaveSpeakerMode()
+            speakerSyncEngine.startHosting()
             if (hostUseNotificationHook.value) {
                 broadcastHostStateToClient(includeMetadata = true)
             } else if (_hostSongs.value.isEmpty()) {
@@ -266,6 +281,7 @@ class PlaybackService : Service() {
             }
         } else {
             exoPlayer?.pause()
+            speakerSyncEngine.stopHosting()
             _clientSongs.value = emptyList()
             _clientLibraryPages.value = emptyList()
             _clientPlaybackState.value = null
@@ -1016,9 +1032,75 @@ class PlaybackService : Service() {
                 if (isHostMode.value && bluetoothEngine.connectionState.value == BluetoothConnectionState.CONNECTED) {
                     broadcastHostStateToClient()
                 }
+                // Speaker mode's actual sync mechanism: a frequent, lightweight position/
+                // play-state correction signal rather than a one-time scheduled start, so
+                // speakers stay roughly aligned even if one briefly lags or a connection
+                // hiccups. Independent of the control channel - runs whenever hosting and
+                // native (not hook mode, which has no local file to have sent in the first
+                // place).
+                if (isHostMode.value && !hostUseNotificationHook.value) {
+                    val player = exoPlayer
+                    if (player != null) {
+                        speakerSyncEngine.broadcastSync(player.currentPosition, player.isPlaying)
+                    }
+                }
                 delay(900)
             }
         }
+    }
+
+    /** Sends the current native-library track to any connected speakers. No-op in
+     * notification-hook mode - there's no local file to send for a third-party app's session. */
+    private fun broadcastTrackToSpeakers() {
+        if (hostUseNotificationHook.value) return
+        val player = exoPlayer ?: return
+        val song = _hostSongs.value.getOrNull(player.currentMediaItemIndex) ?: return
+        speakerSyncEngine.broadcastTrack(song.id, song.title, song.artist, Uri.parse(song.uriString))
+    }
+
+    /** Client-side: connect to the currently-connected host's separate speaker channel and
+     * start following its playback. No-op if not actually connected as a remote right now. */
+    fun joinSpeakerMode() {
+        if (isHostMode.value) return
+        val device = bluetoothEngine.getConnectedRemoteDevice() ?: return
+        leaveSpeakerMode()
+        speakerSyncEngine.joinAsSpeaker(device)
+
+        speakerJob = scope.launch {
+            launch {
+                speakerSyncEngine.clientState.collect { state ->
+                    if (state is com.example.bluetooth.SpeakerSyncEngine.SpeakerClientState.Ready) {
+                        if (speakerPlayer == null) {
+                            speakerPlayer = ExoPlayer.Builder(this@PlaybackService).build()
+                        }
+                        speakerPlayer?.apply {
+                            setMediaItem(MediaItem.fromUri(state.fileUri))
+                            prepare()
+                            play()
+                        }
+                    }
+                }
+            }
+            launch {
+                speakerSyncEngine.syncSignal.collect { signal ->
+                    val (hostPosition, hostPlaying) = signal ?: return@collect
+                    val player = speakerPlayer ?: return@collect
+                    if (speakerSyncEngine.isDrifted(player.currentPosition, hostPosition)) {
+                        player.seekTo(hostPosition)
+                    }
+                    if (hostPlaying && !player.isPlaying) player.play()
+                    if (!hostPlaying && player.isPlaying) player.pause()
+                }
+            }
+        }
+    }
+
+    fun leaveSpeakerMode() {
+        speakerJob?.cancel()
+        speakerJob = null
+        speakerSyncEngine.leaveSpeakerMode()
+        speakerPlayer?.release()
+        speakerPlayer = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -1253,6 +1335,11 @@ class PlaybackService : Service() {
         
         bluetoothEngine.cleanup()
         bleDiscoveryEngine.cleanup()
+        speakerSyncEngine.stopHosting()
+        speakerSyncEngine.leaveSpeakerMode()
+        speakerJob?.cancel()
+        speakerPlayer?.release()
+        speakerPlayer = null
         MyNotificationListener.onDataChangedListener = null
     }
 }

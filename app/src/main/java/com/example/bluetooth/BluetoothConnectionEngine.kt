@@ -129,6 +129,18 @@ class BluetoothConnectionEngine(private val context: Context) {
         return bluetoothAdapter?.bondedDevices?.toList() ?: emptyList()
     }
 
+    /** The device on the other end of the current control-channel connection, if any - used
+     * to join that same device's speaker channel (a completely separate connection/UUID). */
+    @SuppressLint("MissingPermission")
+    fun getConnectedRemoteDevice(): BluetoothDevice? {
+        if (_connectionState.value != BluetoothConnectionState.CONNECTED) return null
+        return try {
+            clientSocket?.remoteDevice
+        } catch (e: SecurityException) {
+            null
+        }
+    }
+
     private fun hasBluetoothConnectPermission(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             context.checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) == android.content.pm.PackageManager.PERMISSION_GRANTED &&

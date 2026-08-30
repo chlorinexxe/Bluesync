@@ -70,6 +70,18 @@ fun PortraitPlayerLayout(
             )
         }
 
+        AnimatedVisibility(visible = state.bluetoothState == com.example.bluetooth.BluetoothConnectionState.CONNECTED && !isCollapsed) {
+            SpeakerModeCard(
+                isHostMode = state.isHostMode,
+                hostUseNotificationHook = state.hostUseNotificationHook,
+                connectedSpeakerCount = state.connectedSpeakerCount,
+                speakerClientState = state.speakerClientState,
+                onJoin = actions.onJoinSpeakerMode,
+                onLeave = actions.onLeaveSpeakerMode,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+        }
+
         Crossfade(targetState = isCollapsed, label = "nowPlayingCollapse") { collapsed ->
             if (collapsed) {
                 MiniPlayerBar(
@@ -146,6 +158,17 @@ fun LandscapePlayerLayout(
 
             if (state.isHostMode) {
                 SourceToggleRow(useNotificationHook = state.hostUseNotificationHook, onToggle = actions.onToggleSource)
+            }
+
+            if (state.bluetoothState == com.example.bluetooth.BluetoothConnectionState.CONNECTED) {
+                SpeakerModeCard(
+                    isHostMode = state.isHostMode,
+                    hostUseNotificationHook = state.hostUseNotificationHook,
+                    connectedSpeakerCount = state.connectedSpeakerCount,
+                    speakerClientState = state.speakerClientState,
+                    onJoin = actions.onJoinSpeakerMode,
+                    onLeave = actions.onLeaveSpeakerMode
+                )
             }
 
             QueueSection(

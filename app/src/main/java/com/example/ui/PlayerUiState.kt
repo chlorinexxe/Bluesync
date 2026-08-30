@@ -2,6 +2,7 @@ package com.example.ui
 
 import androidx.compose.ui.graphics.Color
 import com.example.bluetooth.BluetoothConnectionState
+import com.example.bluetooth.SpeakerSyncEngine
 import com.example.model.Song
 
 /**
@@ -28,7 +29,11 @@ data class PlayerUiState(
     val maxVolume: Int,
     val displaySongs: List<Song>,
     val activeQueueIndex: Int,
-    val hookAuthorized: Boolean
+    val hookAuthorized: Boolean,
+    // Speaker mode: how many phones are currently listening in sync as speakers (host side),
+    // and this device's own state if it's joined another host as a speaker (client side).
+    val connectedSpeakerCount: Int,
+    val speakerClientState: SpeakerSyncEngine.SpeakerClientState
 )
 
 /** User-triggered actions, pre-wired with haptics/viewmodel calls by [PremiumPlayerUI]. */
@@ -49,5 +54,7 @@ data class PlayerActions(
     val onVolumeChange: (Int) -> Unit,
     val onGrantHookAccess: () -> Unit,
     val onSelectSong: (Song, Int) -> Unit,
-    val onLoadMoreSongs: () -> Unit
+    val onLoadMoreSongs: () -> Unit,
+    val onJoinSpeakerMode: () -> Unit,
+    val onLeaveSpeakerMode: () -> Unit
 )

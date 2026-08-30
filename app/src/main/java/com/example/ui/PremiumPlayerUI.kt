@@ -70,6 +70,11 @@ fun PremiumPlayerUI(
     val clientLibraryPages by (service?.clientLibraryPages ?: MutableStateFlow(emptyList())).collectAsState()
     val clientState by (service?.clientPlaybackState ?: MutableStateFlow(null)).collectAsState()
 
+    // Speaker mode
+    val connectedSpeakerCount by (service?.speakerSyncEngine?.connectedSpeakerCount ?: MutableStateFlow(0)).collectAsState()
+    val speakerClientState by (service?.speakerSyncEngine?.clientState
+        ?: MutableStateFlow(com.example.bluetooth.SpeakerSyncEngine.SpeakerClientState.Disconnected)).collectAsState()
+
     var showScanSheet by remember { mutableStateOf(false) }
 
     val audioManager = remember { context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager }
@@ -313,7 +318,9 @@ fun PremiumPlayerUI(
             maxVolume = maxVolume,
             displaySongs = displaySongs,
             activeQueueIndex = activeQueueIndex,
-            hookAuthorized = hookAuthorized
+            hookAuthorized = hookAuthorized,
+            connectedSpeakerCount = connectedSpeakerCount,
+            speakerClientState = speakerClientState
         )
 
         val isConnected = bluetoothState == com.example.bluetooth.BluetoothConnectionState.CONNECTED
@@ -350,7 +357,9 @@ fun PremiumPlayerUI(
                 context.startActivity(Intent("android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS"))
             },
             onSelectSong = { song, idx -> hapticDriver.triggerClick(); viewModel.playSongWithId(song.id, idx) },
-            onLoadMoreSongs = { viewModel.requestMoreSongs() }
+            onLoadMoreSongs = { viewModel.requestMoreSongs() },
+            onJoinSpeakerMode = { hapticDriver.triggerClick(); viewModel.joinSpeakerMode() },
+            onLeaveSpeakerMode = { hapticDriver.triggerClick(); viewModel.leaveSpeakerMode() }
         )
 
         if (isLandscape) {
