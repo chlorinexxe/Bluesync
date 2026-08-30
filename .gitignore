@@ -15,7 +15,10 @@
 .cxx
 local.properties
 .env
-debug.keystore
+
+# debug.keystore is intentionally tracked (not ignored) - see app/build.gradle.kts's
+# debugConfig signing config. It must be identical across every machine and CI run, or
+# debug builds signed with different keys can't be installed over each other on a device.
 
 # Allow APK files to be tracked in Git
 !*.apk

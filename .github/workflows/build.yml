@@ -27,14 +27,8 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      # Debug builds are signed with the well-known, non-secret Android debug key. It's
-      # gitignored locally (machine-specific) so CI has to generate its own copy - these are
-      # the fixed, public "android"/"android" debug credentials, not something sensitive.
-      - name: Generate debug keystore
-        run: |
-          keytool -genkeypair -v -keystore debug.keystore -storepass android \
-            -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 \
-            -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
+      # debug.keystore is committed to the repo (see .gitignore) precisely so every build -
+      # local or CI - signs with the same key; nothing to generate here.
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
