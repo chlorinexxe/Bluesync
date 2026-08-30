@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.MyNotificationListener
 import com.example.PlaybackService
 import com.example.bluetooth.BluetoothConnectionState
+import com.example.bluetooth.NearbyBleDevice
 import com.example.model.BluetoothCommand
 import com.example.model.Song
 import androidx.media3.common.Player
@@ -37,6 +38,12 @@ class MainViewModel : ViewModel() {
 
     private val _isScanning = MutableStateFlow(false)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
+
+    private val _nearbyBleDevices = MutableStateFlow<List<NearbyBleDevice>>(emptyList())
+    val nearbyBleDevices: StateFlow<List<NearbyBleDevice>> = _nearbyBleDevices.asStateFlow()
+
+    private val _isBleScanning = MutableStateFlow(false)
+    val isBleScanning: StateFlow<Boolean> = _isBleScanning.asStateFlow()
 
     init {
         viewModelScope.launch {
@@ -101,6 +108,16 @@ class MainViewModel : ViewModel() {
                             _isScanning.value = it
                         }
                     }
+                    launch {
+                        s.bleDiscoveryEngine.nearbyDevices.collect {
+                            _nearbyBleDevices.value = it
+                        }
+                    }
+                    launch {
+                        s.bleDiscoveryEngine.isBleScanning.collect {
+                            _isBleScanning.value = it
+                        }
+                    }
                 }
             }
         }
@@ -136,13 +153,25 @@ class MainViewModel : ViewModel() {
         _pairedDevices.value = s.bluetoothEngine.getPairedDevices()
     }
 
+    fun startBleAdvertising() {
+        val s = _service.value ?: return
+        // Permissions are requested asynchronously from Compose after the service is already
+        // created, so the initial advertise attempt in PlaybackService.onCreate() can silently
+        // no-op if they weren't granted yet - call this once they are to retry.
+        s.bleDiscoveryEngine.startAdvertising()
+    }
+
     fun startBluetoothScan() {
         val s = _service.value ?: return
+        // BLE scan surfaces nearby BlueSync phones in ~1s; classic discovery keeps running
+        // alongside it as a fallback for devices without BLE peripheral/advertising support.
+        s.bleDiscoveryEngine.startScanning()
         s.bluetoothEngine.startDeviceDiscovery()
     }
 
     fun stopBluetoothScan() {
         val s = _service.value ?: return
+        s.bleDiscoveryEngine.stopScanning()
         s.bluetoothEngine.stopDeviceDiscovery()
     }
 
@@ -153,6 +182,9 @@ class MainViewModel : ViewModel() {
 
     fun connectToBluetoothDevice(device: BluetoothDevice) {
         val s = _service.value ?: return
+        // Whether the device came from the BLE-fast list or classic discovery, the connection
+        // itself is always the existing classic RFCOMM socket - no protocol change either way.
+        s.bleDiscoveryEngine.stopScanning()
         s.bluetoothEngine.connectToDevice(device)
     }
 

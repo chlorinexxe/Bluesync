@@ -49,9 +49,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.graphics.vector.ImageVector
 import coil.compose.AsyncImage
 import com.example.MyNotificationListener
 import com.example.bluetooth.BluetoothConnectionState
+import com.example.bluetooth.NearbyBleDevice
 import com.example.haptic.PremiumHapticDriver
 import com.example.model.Song
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -92,6 +94,7 @@ fun PremiumPlayerUI(
     val isScanning by viewModel.isScanning.collectAsState()
     val discoveredDevices by viewModel.discoveredDevices.collectAsState()
     val pairedDevices by viewModel.pairedDevices.collectAsState()
+    val nearbyBleDevices by viewModel.nearbyBleDevices.collectAsState()
     val currentPosition by viewModel.currentPlaybackPosition.collectAsState()
 
     // Host or Client App state
@@ -313,6 +316,7 @@ fun PremiumPlayerUI(
         bluetoothPermissionGranted = btOk
         if (btOk) {
             viewModel.refreshPairedDevices()
+            viewModel.startBleAdvertising()
         }
     }
 
@@ -1169,6 +1173,7 @@ fun PremiumPlayerUI(
                 isScanning = isScanning,
                 discoveredDevices = discoveredDevices,
                 pairedDevices = pairedDevices,
+                nearbyBleDevices = nearbyBleDevices,
                 onRefreshScan = {
                     hapticDriver.triggerClick()
                     viewModel.startBluetoothScan()
@@ -1285,6 +1290,7 @@ fun BluetoothScanOverlay(
     isScanning: Boolean,
     discoveredDevices: List<BluetoothDevice>,
     pairedDevices: List<BluetoothDevice>,
+    nearbyBleDevices: List<NearbyBleDevice> = emptyList(),
     onRefreshScan: () -> Unit,
     onStopScan: () -> Unit,
     onDeviceSelected: (BluetoothDevice) -> Unit,
@@ -1389,6 +1395,42 @@ fun BluetoothScanOverlay(
                 ) {
                     item {
                         Text(
+                            text = "NEARBY (INSTANT)",
+                            color = CyanGlow,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                    }
+
+                    if (nearbyBleDevices.isEmpty()) {
+                        item {
+                            Text(
+                                text = if (isScanning) "Listening for nearby BlueSync phones..." else "Tap Scan to find nearby phones instantly.",
+                                color = Color.Gray,
+                                fontSize = 11.sp,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 12.dp),
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    } else {
+                        itemsIndexed(nearbyBleDevices, key = { _, item -> item.device.address }) { _, nearby ->
+                            DeviceRowItem(
+                                device = nearby.device,
+                                onClick = { onDeviceSelected(nearby.device) },
+                                leadingIcon = Icons.Rounded.Bolt,
+                                leadingIconTint = CyanGlow,
+                                trailingLabel = "${nearby.rssi} dBm",
+                                displayName = nearby.name
+                            )
+                        }
+                    }
+
+                    item {
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text(
                             text = "DISCOVERED DEVICES",
                             color = RosePulse,
                             fontWeight = FontWeight.Bold,
@@ -1453,7 +1495,11 @@ fun BluetoothScanOverlay(
 @Composable
 fun DeviceRowItem(
     device: BluetoothDevice,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    leadingIcon: ImageVector = Icons.Rounded.Smartphone,
+    leadingIconTint: Color = Color.LightGray,
+    trailingLabel: String? = null,
+    displayName: String? = null
 ) {
     Row(
         modifier = Modifier
@@ -1470,11 +1516,11 @@ fun DeviceRowItem(
             modifier = Modifier.weight(1f),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Rounded.Smartphone, contentDescription = "Device icon", tint = Color.LightGray)
+            Icon(leadingIcon, contentDescription = "Device icon", tint = leadingIconTint)
             Spacer(modifier = Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = device.name ?: "Unnamed Device",
+                    text = displayName ?: device.name ?: "Unnamed Device",
                     color = PureWhite,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.SemiBold,
@@ -1495,6 +1541,18 @@ fun DeviceRowItem(
         }
 
         Spacer(modifier = Modifier.width(8.dp))
+
+        if (trailingLabel != null) {
+            Text(
+                text = trailingLabel,
+                color = CyanGlow,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(end = 8.dp),
+                maxLines = 1,
+                softWrap = false
+            )
+        }
 
         Icon(Icons.Rounded.ChevronRight, contentDescription = "Connect arrow", tint = Color.Gray)
     }

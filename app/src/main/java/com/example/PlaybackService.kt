@@ -47,6 +47,8 @@ class PlaybackService : Service() {
     var exoPlayer: ExoPlayer? = null
     lateinit var bluetoothEngine: BluetoothConnectionEngine
         private set
+    lateinit var bleDiscoveryEngine: com.example.bluetooth.BleDiscoveryEngine
+        private set
     var mediaSession: androidx.media3.session.MediaSession? = null
 
     companion object {
@@ -98,10 +100,14 @@ class PlaybackService : Service() {
         super.onCreate()
         Log.d(TAG, "Service Created")
         bluetoothEngine = BluetoothConnectionEngine(applicationContext)
+        bleDiscoveryEngine = com.example.bluetooth.BleDiscoveryEngine(applicationContext)
         initializePlayer()
         setupBluetoothEngineCallbacks()
         createNotificationChannel()
         setupNotificationListenerHook()
+        // Beacon continuously so the other phone can find us in ~1s instead of waiting on a
+        // classic 12s discovery cycle - cheap enough to leave running for the service lifetime.
+        bleDiscoveryEngine.startAdvertising()
     }
 
     private fun initializePlayer() {
@@ -1103,6 +1109,7 @@ class PlaybackService : Service() {
         exoPlayer = null
         
         bluetoothEngine.cleanup()
+        bleDiscoveryEngine.cleanup()
         MyNotificationListener.onDataChangedListener = null
     }
 }
