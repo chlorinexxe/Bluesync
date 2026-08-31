@@ -229,6 +229,11 @@ class MainViewModel : ViewModel() {
         s.leaveSpeakerMode()
     }
 
+    fun forceSyncSpeaker() {
+        val s = _service.value ?: return
+        s.forceSyncSpeaker()
+    }
+
     fun killSwitch() {
         val s = _service.value ?: return
         s.killSwitch()

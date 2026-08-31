@@ -1,6 +1,7 @@
 package com.example.ui
 
 import androidx.compose.ui.graphics.Color
+import com.example.PlaybackService
 import com.example.bluetooth.BluetoothConnectionState
 import com.example.bluetooth.SpeakerSyncEngine
 import com.example.model.Song
@@ -33,7 +34,8 @@ data class PlayerUiState(
     // Speaker mode: how many phones are currently listening in sync as speakers (host side),
     // and this device's own state if it's joined another host as a speaker (client side).
     val connectedSpeakerCount: Int,
-    val speakerClientState: SpeakerSyncEngine.SpeakerClientState
+    val speakerClientState: SpeakerSyncEngine.SpeakerClientState,
+    val speakerSyncStatus: PlaybackService.SpeakerSyncStatus
 )
 
 /** User-triggered actions, pre-wired with haptics/viewmodel calls by [PremiumPlayerUI]. */
@@ -57,5 +59,6 @@ data class PlayerActions(
     val onLoadMoreSongs: () -> Unit,
     val onJoinSpeakerMode: () -> Unit,
     val onLeaveSpeakerMode: () -> Unit,
+    val onForceSyncSpeaker: () -> Unit,
     val onKillSwitch: () -> Unit
 )

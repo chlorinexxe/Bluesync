@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.File
@@ -196,12 +197,22 @@ class SpeakerSyncEngine(private val context: Context) {
         }
     }
 
+    /** Fired synchronously the instant a speaker connection is registered - including a
+     * Bluetooth-to-WiFi-Direct upgrade, which is a brand-new connection from this side even
+     * though it's the same logical speaker. PlaybackService hooks this to push the current
+     * track. Deliberately not driven by comparing [connectedSpeakerCount] snapshots over time:
+     * during a BT->WiFi handoff the count goes 1(bt)->2(bt+wifi)->1(wifi), and two independent
+     * "count increased" reactions racing their own separate file reads/timings was observed live
+     * leaving the new connection stuck waiting for a track that never actually arrived on it. */
+    var onNewSpeakerJoined: (() -> Unit)? = null
+
     private fun handleNewSpeakerConnection(address: String, input: DataInputStream, out: DataOutputStream, close: () -> Unit) {
         scope.launch {
             try {
                 speakerConnections[address] = SpeakerConnection(out, close)
                 _connectedSpeakerCount.value = speakerConnections.size
                 Log.d(TAG, "Speaker joined: $address (${speakerConnections.size} total)")
+                onNewSpeakerJoined?.invoke()
 
                 // The connection only needs to carry host -> speaker traffic; just block here
                 // reading (and discarding) anything the speaker sends, so we notice a closed
@@ -271,10 +282,13 @@ class SpeakerSyncEngine(private val context: Context) {
     }
 
     /** Lightweight, frequent position/play-state correction signal - the actual sync
-     * mechanism, sent every second or so rather than relying on a one-time scheduled start. */
-    fun broadcastSync(positionMs: Long, isPlaying: Boolean) {
+     * mechanism, sent every second or so rather than relying on a one-time scheduled start.
+     * Tagged with the song it's for: right at a track change, a SYNC tick for the *new* track
+     * (position reset near 0) can otherwise reach the speaker before the new track's audio does,
+     * getting misread as massive drift and hard-seeking the *old*, still-playing track to 0. */
+    fun broadcastSync(positionMs: Long, isPlaying: Boolean, songId: String?) {
         if (speakerConnections.isEmpty()) return
-        val message = SpeakerMessage(type = "SYNC", positionMs = positionMs, isPlaying = isPlaying)
+        val message = SpeakerMessage(type = "SYNC", songId = songId, positionMs = positionMs, isPlaying = isPlaying)
         for ((address, conn) in speakerConnections) {
             scope.launch {
                 try {
@@ -335,15 +349,17 @@ class SpeakerSyncEngine(private val context: Context) {
         // start almost immediately instead of waiting out the whole transfer; isComplete=true
         // fires again once the rest has arrived, at the same fileUri, so the caller can
         // seamlessly swap from the partial file to the full one in place.
-        data class Ready(val title: String, val artist: String, val fileUri: Uri, val isComplete: Boolean = true) : SpeakerClientState()
+        data class Ready(val title: String, val artist: String, val fileUri: Uri, val songId: String?, val isComplete: Boolean = true) : SpeakerClientState()
         object Failed : SpeakerClientState()
     }
 
     private val _clientState = MutableStateFlow<SpeakerClientState>(SpeakerClientState.Disconnected)
     val clientState: StateFlow<SpeakerClientState> = _clientState.asStateFlow()
 
-    private val _syncSignal = MutableStateFlow<Pair<Long, Boolean>?>(null) // positionMs, isPlaying
-    val syncSignal: StateFlow<Pair<Long, Boolean>?> = _syncSignal.asStateFlow()
+    data class SyncTick(val positionMs: Long, val isPlaying: Boolean, val songId: String?)
+
+    private val _syncSignal = MutableStateFlow<SyncTick?>(null)
+    val syncSignal: StateFlow<SyncTick?> = _syncSignal.asStateFlow()
 
     /** Connects to the host's speaker channel, always starting over Bluetooth (fast, reliable,
      * needs no shared network), then transparently upgrading to WiFi Direct if the host offers
@@ -368,7 +384,18 @@ class SpeakerSyncEngine(private val context: Context) {
                     input.readFully(firstBytes)
                     val firstMessage = messageAdapter.fromJson(String(firstBytes, Charsets.UTF_8))
                     if (firstMessage?.type == "WIFI_DIRECT_INFO" && firstMessage.wifiSsid != null && firstMessage.wifiPassphrase != null) {
-                        val upgraded = tryUpgradeToWifiDirect(firstMessage.wifiSsid, firstMessage.wifiPassphrase, firstMessage.wifiHostIp)
+                        // A hard ceiling on the whole upgrade attempt, independent of whatever
+                        // internal timeouts joinGroup()/the socket connect think they have - a
+                        // hung system callback (observed live: stuck in "Connecting..." for over
+                        // a minute with neither success nor failure ever reported) must not be
+                        // able to block the fallback to Bluetooth forever.
+                        val upgraded = try {
+                            withTimeoutOrNull(20_000) {
+                                tryUpgradeToWifiDirect(firstMessage.wifiSsid, firstMessage.wifiPassphrase, firstMessage.wifiHostIp)
+                            }
+                        } catch (e: Exception) {
+                            null
+                        }
                         if (upgraded != null) {
                             try { btSocket.close() } catch (e: Exception) { /* ignore */ }
                             joinCloseFn = { try { upgraded.close() } catch (e: Exception) { /* ignore */ } }
@@ -427,6 +454,7 @@ class SpeakerSyncEngine(private val context: Context) {
         val fileUri: Uri,
         val title: String,
         val artist: String,
+        val songId: String?,
         val totalBytes: Long
     ) {
         var received = 0L
@@ -480,7 +508,7 @@ class SpeakerSyncEngine(private val context: Context) {
             val position = message.positionMs
             val playing = message.isPlaying
             if (position != null && playing != null) {
-                _syncSignal.value = position to playing
+                _syncSignal.value = SyncTick(position, playing, message.songId)
             }
         }
     }
@@ -493,6 +521,7 @@ class SpeakerSyncEngine(private val context: Context) {
             fileUri = Uri.fromFile(cacheFile),
             title = message.title ?: "Speaker track",
             artist = message.artist ?: "",
+            songId = message.songId,
             totalBytes = totalBytes
         ).apply {
             // Start playback once a small early chunk is down, then keep re-announcing every
@@ -509,12 +538,12 @@ class SpeakerSyncEngine(private val context: Context) {
         track.received += chunk.size
         if (track.received >= track.totalBytes) {
             try { track.file.flush(); track.file.close() } catch (e: Exception) { /* ignore */ }
-            _clientState.value = SpeakerClientState.Ready(track.title, track.artist, track.fileUri, isComplete = true)
+            _clientState.value = SpeakerClientState.Ready(track.title, track.artist, track.fileUri, track.songId, isComplete = true)
         } else if (track.received >= track.nextAnnounceAt) {
             val now = android.os.SystemClock.elapsedRealtime()
             if (now - track.lastAnnounceRealtime >= MIN_ANNOUNCE_INTERVAL_MS) {
                 try { track.file.flush() } catch (e: Exception) { /* ignore */ }
-                _clientState.value = SpeakerClientState.Ready(track.title, track.artist, track.fileUri, isComplete = false)
+                _clientState.value = SpeakerClientState.Ready(track.title, track.artist, track.fileUri, track.songId, isComplete = false)
                 track.lastAnnounceRealtime = now
             }
             track.nextAnnounceAt += REBUFFER_CHUNK_BYTES

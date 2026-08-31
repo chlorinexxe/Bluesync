@@ -63,6 +63,17 @@ class PlaybackService : Service() {
     private var speakerPlayer: ExoPlayer? = null
     private var speakerJob: Job? = null
 
+    /** Surfaced so the UI can show what speaker sync is actually doing right now, instead of it
+     * being an invisible background process the user has to just trust. */
+    sealed class SpeakerSyncStatus {
+        object Idle : SpeakerSyncStatus()
+        object WaitingForTrack : SpeakerSyncStatus()
+        object Synced : SpeakerSyncStatus()
+        data class Correcting(val driftMs: Long) : SpeakerSyncStatus()
+    }
+    private val _speakerSyncStatus = MutableStateFlow<SpeakerSyncStatus>(SpeakerSyncStatus.Idle)
+    val speakerSyncStatus = _speakerSyncStatus.asStateFlow()
+
     companion object {
         const val ACTION_PLAY_PAUSE = "com.example.ACTION_PLAY_PAUSE"
         const val ACTION_NEXT = "com.example.ACTION_NEXT"
@@ -155,17 +166,13 @@ class PlaybackService : Service() {
         }
 
         // broadcastTrackToSpeakers() only fires on track transitions - a speaker joining
-        // mid-song would otherwise get silence until the host happens to skip tracks. Push
-        // the currently-loaded track the moment the connected count goes up so a fresh join
-        // has something to play right away.
-        var lastKnownSpeakerCount = 0
-        scope.launch {
-            speakerSyncEngine.connectedSpeakerCount.collect { count ->
-                if (count > lastKnownSpeakerCount) {
-                    broadcastTrackToSpeakers()
-                }
-                lastKnownSpeakerCount = count
-            }
+        // mid-song would otherwise get silence until the host happens to skip tracks. Push the
+        // currently-loaded track the instant any speaker connection registers (including a
+        // Bluetooth-to-WiFi-Direct upgrade, which re-registers as a fresh connection) so it has
+        // something to play right away. Hopping to Main here since broadcastTrackToSpeakers()
+        // touches exoPlayer, but the callback itself fires from SpeakerSyncEngine's IO scope.
+        speakerSyncEngine.onNewSpeakerJoined = {
+            scope.launch { broadcastTrackToSpeakers() }
         }
     }
 
@@ -1076,7 +1083,8 @@ class PlaybackService : Service() {
     private fun broadcastSpeakerSyncNow() {
         if (!isHostMode.value || hostUseNotificationHook.value) return
         val player = exoPlayer ?: return
-        speakerSyncEngine.broadcastSync(player.currentPosition, player.isPlaying)
+        val songId = _hostSongs.value.getOrNull(player.currentMediaItemIndex)?.id
+        speakerSyncEngine.broadcastSync(player.currentPosition, player.isPlaying, songId)
     }
 
     /** Sends the current native-library track to any connected speakers. No-op in
@@ -1094,12 +1102,19 @@ class PlaybackService : Service() {
         if (isHostMode.value) return
         val device = bluetoothEngine.getConnectedRemoteDevice() ?: return
         leaveSpeakerMode()
+        _speakerSyncStatus.value = SpeakerSyncStatus.WaitingForTrack
         speakerSyncEngine.joinAsSpeaker(device)
 
         // Tracks the file currently loaded into speakerPlayer while it's still downloading, so a
         // repeat announcement for the *same* track (more of it landed, or it just finished) is
         // recognized as a top-up rather than a fresh track and doesn't restart playback.
         var loadingUri: Uri? = null
+        // Tracks which song is actually loaded into speakerPlayer right now, so a SYNC tick for
+        // a track that hasn't loaded yet (or one left over from before a track change) can be
+        // told apart from a tick for what's actually playing - without this, a SYNC tick for a
+        // *new* track (position reset near 0) can reach the speaker before that track's audio
+        // does, get misread as massive drift, and hard-seek the *old*, still-playing track to 0.
+        var loadedSongId: String? = null
 
         speakerJob = scope.launch {
             launch {
@@ -1132,10 +1147,11 @@ class PlaybackService : Service() {
                             // its last reported position is already cached here.
                             player.setMediaItem(MediaItem.fromUri(state.fileUri))
                             player.prepare()
-                            speakerSyncEngine.syncSignal.value?.let { (hostPosition, _) ->
-                                player.seekTo(hostPosition)
-                            }
+                            speakerSyncEngine.syncSignal.value
+                                ?.takeIf { it.songId == null || it.songId == state.songId }
+                                ?.let { player.seekTo(it.positionMs) }
                             player.play()
+                            loadedSongId = state.songId
                         }
                         loadingUri = if (!state.isComplete) state.fileUri else null
                         updateForegroundNotification()
@@ -1144,24 +1160,38 @@ class PlaybackService : Service() {
             }
             launch {
                 speakerSyncEngine.syncSignal.collect { signal ->
-                    val (hostPosition, hostPlaying) = signal ?: return@collect
+                    if (signal == null) return@collect
                     val player = speakerPlayer ?: return@collect
 
+                    // A tick for a track that hasn't loaded into the player yet (or one still
+                    // trickling in for whatever track was playing *before* this one) isn't safe
+                    // to act on - see the loadedSongId doc comment above for why.
+                    if (signal.songId != null && signal.songId != loadedSongId) {
+                        _speakerSyncStatus.value = SpeakerSyncStatus.WaitingForTrack
+                        return@collect
+                    }
+
+                    val hostPosition = signal.positionMs
+                    val hostPlaying = signal.isPlaying
                     if (hostPlaying && !player.isPlaying) player.play()
                     if (!hostPlaying && player.isPlaying) player.pause()
 
+                    val driftMs = player.currentPosition - hostPosition
                     when (val correction = speakerSyncEngine.syncCorrectionFor(player.currentPosition, hostPosition)) {
                         is com.example.bluetooth.SpeakerSyncEngine.SyncCorrection.HardSeek -> {
                             player.seekTo(correction.toPositionMs)
                             if (player.playbackParameters.speed != 1f) player.setPlaybackSpeed(1f)
+                            _speakerSyncStatus.value = SpeakerSyncStatus.Correcting(driftMs)
                         }
                         is com.example.bluetooth.SpeakerSyncEngine.SyncCorrection.SpeedAdjust -> {
                             if (player.playbackParameters.speed != correction.speed) {
                                 player.setPlaybackSpeed(correction.speed)
                             }
+                            _speakerSyncStatus.value = SpeakerSyncStatus.Correcting(driftMs)
                         }
                         is com.example.bluetooth.SpeakerSyncEngine.SyncCorrection.None -> {
                             if (player.playbackParameters.speed != 1f) player.setPlaybackSpeed(1f)
+                            _speakerSyncStatus.value = SpeakerSyncStatus.Synced
                         }
                     }
                 }
@@ -1175,7 +1205,21 @@ class PlaybackService : Service() {
         speakerSyncEngine.leaveSpeakerMode()
         speakerPlayer?.release()
         speakerPlayer = null
+        _speakerSyncStatus.value = SpeakerSyncStatus.Idle
         updateForegroundNotification()
+    }
+
+    /** Manual "sync now" - immediately snaps to the host's last known position regardless of the
+     * usual drift thresholds, for when the user wants to force a correction rather than wait for
+     * the next automatic tick (or just doesn't trust it happened without asking). */
+    fun forceSyncSpeaker() {
+        val player = speakerPlayer ?: return
+        val signal = speakerSyncEngine.syncSignal.value ?: return
+        player.seekTo(signal.positionMs)
+        if (player.playbackParameters.speed != 1f) player.setPlaybackSpeed(1f)
+        if (signal.isPlaying && !player.isPlaying) player.play()
+        if (!signal.isPlaying && player.isPlaying) player.pause()
+        _speakerSyncStatus.value = SpeakerSyncStatus.Synced
     }
 
     /** One-stop panic button: tears down everything active (control connection, speaker

@@ -56,8 +56,10 @@ fun PortraitPlayerLayout(
             hostUseNotificationHook = state.hostUseNotificationHook,
             connectedSpeakerCount = state.connectedSpeakerCount,
             speakerClientState = state.speakerClientState,
+            speakerSyncStatus = state.speakerSyncStatus,
             onJoinSpeaker = actions.onJoinSpeakerMode,
             onLeaveSpeaker = actions.onLeaveSpeakerMode,
+            onForceSyncSpeaker = actions.onForceSyncSpeaker,
             onKillSwitch = actions.onKillSwitch,
             modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)
         )
@@ -146,8 +148,10 @@ fun LandscapePlayerLayout(
                 hostUseNotificationHook = state.hostUseNotificationHook,
                 connectedSpeakerCount = state.connectedSpeakerCount,
                 speakerClientState = state.speakerClientState,
+                speakerSyncStatus = state.speakerSyncStatus,
                 onJoinSpeaker = actions.onJoinSpeakerMode,
                 onLeaveSpeaker = actions.onLeaveSpeakerMode,
+                onForceSyncSpeaker = actions.onForceSyncSpeaker,
                 onKillSwitch = actions.onKillSwitch,
                 compact = true
             )

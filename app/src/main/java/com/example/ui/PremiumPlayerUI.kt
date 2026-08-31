@@ -75,6 +75,8 @@ fun PremiumPlayerUI(
     val connectedSpeakerCount by (service?.speakerSyncEngine?.connectedSpeakerCount ?: MutableStateFlow(0)).collectAsState()
     val speakerClientState by (service?.speakerSyncEngine?.clientState
         ?: MutableStateFlow(com.example.bluetooth.SpeakerSyncEngine.SpeakerClientState.Disconnected)).collectAsState()
+    val speakerSyncStatus by (service?.speakerSyncStatus
+        ?: MutableStateFlow(com.example.PlaybackService.SpeakerSyncStatus.Idle)).collectAsState()
 
     var showScanSheet by remember { mutableStateOf(false) }
 
@@ -322,7 +324,8 @@ fun PremiumPlayerUI(
             activeQueueIndex = activeQueueIndex,
             hookAuthorized = hookAuthorized,
             connectedSpeakerCount = connectedSpeakerCount,
-            speakerClientState = speakerClientState
+            speakerClientState = speakerClientState,
+            speakerSyncStatus = speakerSyncStatus
         )
 
         val isConnected = bluetoothState == com.example.bluetooth.BluetoothConnectionState.CONNECTED
@@ -362,6 +365,7 @@ fun PremiumPlayerUI(
             onLoadMoreSongs = { viewModel.requestMoreSongs() },
             onJoinSpeakerMode = { hapticDriver.triggerClick(); viewModel.joinSpeakerMode() },
             onLeaveSpeakerMode = { hapticDriver.triggerClick(); viewModel.leaveSpeakerMode() },
+            onForceSyncSpeaker = { hapticDriver.triggerClick(); viewModel.forceSyncSpeaker() },
             onKillSwitch = { hapticDriver.triggerClick(); viewModel.killSwitch() }
         )
 

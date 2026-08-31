@@ -22,6 +22,7 @@ import androidx.compose.material.icons.rounded.BluetoothConnected
 import androidx.compose.material.icons.rounded.BluetoothDisabled
 import androidx.compose.material.icons.rounded.CellTower
 import androidx.compose.material.icons.rounded.PowerSettingsNew
+import androidx.compose.material.icons.rounded.Sync
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
@@ -42,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material3.CircularProgressIndicator
+import com.example.PlaybackService
 import com.example.bluetooth.BluetoothConnectionState
 import com.example.bluetooth.SpeakerSyncEngine
 
@@ -54,8 +56,10 @@ fun AppHeader(
     hostUseNotificationHook: Boolean,
     connectedSpeakerCount: Int,
     speakerClientState: SpeakerSyncEngine.SpeakerClientState,
+    speakerSyncStatus: PlaybackService.SpeakerSyncStatus,
     onJoinSpeaker: () -> Unit,
     onLeaveSpeaker: () -> Unit,
+    onForceSyncSpeaker: () -> Unit,
     onKillSwitch: () -> Unit,
     compact: Boolean = false,
     modifier: Modifier = Modifier
@@ -102,6 +106,11 @@ fun AppHeader(
                     onJoin = onJoinSpeaker,
                     onLeave = onLeaveSpeaker
                 )
+            }
+
+            if (!isHostMode && speakerClientState is SpeakerSyncEngine.SpeakerClientState.Ready) {
+                Spacer(modifier = Modifier.width(6.dp))
+                SpeakerSyncStatusButton(status = speakerSyncStatus, compact = compact, onClick = onForceSyncSpeaker)
             }
 
             if (bluetoothState != BluetoothConnectionState.DISCONNECTED) {
@@ -334,5 +343,43 @@ private fun SpeakerHeaderButton(
                 Text(connectedSpeakerCount.toString(), fontSize = 8.sp, color = Color.Black, fontWeight = FontWeight.Bold)
             }
         }
+    }
+}
+
+/**
+ * Speaker sync is otherwise an invisible background process - this makes it visible (green =
+ * synced, amber = actively correcting drift, gray = waiting for the current track to finish
+ * loading before it's safe to check) and gives a manual "force it now" escape hatch for anyone
+ * who doesn't want to wait for or trust the automatic correction. Only shown once actually
+ * playing as a speaker - there's nothing to sync before then.
+ */
+@Composable
+private fun SpeakerSyncStatusButton(status: PlaybackService.SpeakerSyncStatus, compact: Boolean, onClick: () -> Unit) {
+    val size = if (compact) 30.dp else 34.dp
+    val tint = when (status) {
+        is PlaybackService.SpeakerSyncStatus.Synced -> CyanGlow
+        is PlaybackService.SpeakerSyncStatus.Correcting -> Color(0xFFFFB74D)
+        is PlaybackService.SpeakerSyncStatus.WaitingForTrack -> Color.LightGray.copy(alpha = 0.5f)
+        is PlaybackService.SpeakerSyncStatus.Idle -> Color.LightGray.copy(alpha = 0.5f)
+    }
+    val description = when (status) {
+        is PlaybackService.SpeakerSyncStatus.Synced -> "In sync - tap to force re-sync"
+        is PlaybackService.SpeakerSyncStatus.Correcting -> "Correcting drift (${status.driftMs}ms) - tap to force re-sync"
+        else -> "Waiting to sync - tap to force re-sync"
+    }
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(RoundedCornerShape(10.dp))
+            .background(GlassSurface)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            Icons.Rounded.Sync,
+            contentDescription = description,
+            tint = tint,
+            modifier = Modifier.width(16.dp)
+        )
     }
 }
